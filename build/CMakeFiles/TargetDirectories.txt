@@ -1,0 +1,4 @@
+C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/build/CMakeFiles/obs-multistream-plugin.dir
+C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/build/CMakeFiles/INSTALL.dir
+C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/build/CMakeFiles/ZERO_CHECK.dir

@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\src\plugin-main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\third_party\obs-studio\build\libobs\libobs_EXPORT.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\third_party\obs-studio\build\deps\w32-pthreads\w32-pthreads_EXPORT.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\third_party\obs-studio\build\frontend\api\obs-frontend-api_EXPORT.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{EE66E6CD-7884-356F-8D69-7CD8F088268D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{6BD8EE9A-3064-38B7-80B8-A20DF891B0F1}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
