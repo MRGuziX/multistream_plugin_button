@@ -1,7 +1,6 @@
 name: Build and Release Plugin
 
 # 1. WHEN SHOULD THIS RUN?
-# We only want to build a release when you push a new version tag (like v1.0.0)
 on:
   push:
     tags:
@@ -11,14 +10,14 @@ on:
 jobs:
   build-windows:
     name: Build for Windows
-    runs-on: windows-latest # Boot up a clean Windows machine in the cloud
+    runs-on: windows-latest
 
     steps:
-      # Step A: Download your code and the OBS submodule
+      # Step A: Download code and the OBS submodule
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive # CRITICAL: This pulls in the third_party/obs-studio code!
+          submodules: recursive
 
       # Step B: Download the pre-compiled OBS dependencies
       - name: Download OBS Dependencies
@@ -27,21 +26,27 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2025-08-23/windows-deps-2025-08-23-x64.zip" -OutFile "obs-deps.zip"
           Expand-Archive -Path "obs-deps.zip" -DestinationPath "obs-deps"
 
-      # Step C: Tell CMake where everything is (pointing inside the extracted sub-folder)
-      - name: Configure CMake
-        run: cmake -B build -S . -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64"
+      # Step C: Compile a minimal version of OBS (just the core libobs, no UI)
+      - name: Build libobs Core
+        run: |
+          cmake -S third_party/obs-studio -B build-obs -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64" -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
+          cmake --build build-obs --config Release --target install
 
-      # Step D: Compile the actual .dll!
+      # Step D: Tell your plugin CMake where to find the deps AND the newly built libobs
+      - name: Configure Plugin CMake
+        run: cmake -B build -S . -DCMAKE_PREFIX_PATH="${{ github.workspace }}/obs-install;${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64"
+
+      # Step E: Compile the actual .dll!
       - name: Build Plugin
         run: cmake --build build --config Release
 
-      # Step E: Package the dist/ folder into a neat .zip file
+      # Step F: Package the dist/ folder into a neat .zip file
       - name: Zip Release
         shell: pwsh
         run: |
           Compress-Archive -Path dist\* -DestinationPath obs-multistream-plugin-windows.zip
 
-      # Step F: Upload that .zip file to your GitHub Releases page automatically
+      # Step G: Upload that .zip file to your GitHub Releases page automatically
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
