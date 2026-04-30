@@ -1,0 +1,52 @@
+#include <winver.h>
+
+#ifndef PLUGIN_VERSION_MAJOR
+#define PLUGIN_VERSION_MAJOR 1
+#endif
+#ifndef PLUGIN_VERSION_MINOR
+#define PLUGIN_VERSION_MINOR 0
+#endif
+#ifndef PLUGIN_VERSION_PATCH
+#define PLUGIN_VERSION_PATCH 0
+#endif
+#ifndef PLUGIN_VERSION_BUILD
+#define PLUGIN_VERSION_BUILD 0
+#endif
+
+#define _STR(x) #x
+#define STR(x) _STR(x)
+#define PLUGIN_VERSION_STRING \
+    STR(PLUGIN_VERSION_MAJOR) "." STR(PLUGIN_VERSION_MINOR) "." STR(PLUGIN_VERSION_PATCH) "." STR(PLUGIN_VERSION_BUILD)
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    PLUGIN_VERSION_MAJOR,PLUGIN_VERSION_MINOR,PLUGIN_VERSION_PATCH,PLUGIN_VERSION_BUILD
+ PRODUCTVERSION PLUGIN_VERSION_MAJOR,PLUGIN_VERSION_MINOR,PLUGIN_VERSION_PATCH,PLUGIN_VERSION_BUILD
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS      VS_FF_DEBUG
+#else
+ FILEFLAGS      0x0L
+#endif
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_DLL
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "OBS Multistream Plugin Contributors"
+            VALUE "FileDescription",  "OBS plugin for multistreaming to multiple RTMP platforms"
+            VALUE "FileVersion",      PLUGIN_VERSION_STRING
+            VALUE "InternalName",     "obs-multistream-plugin"
+            VALUE "LegalCopyright",   "Licensed under GPL-2.0-or-later. See COPYRIGHT."
+            VALUE "OriginalFilename", "obs-multistream-plugin.dll"
+            VALUE "ProductName",      "OBS Multistream Plugin"
+            VALUE "ProductVersion",   PLUGIN_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END
