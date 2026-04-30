@@ -24,7 +24,7 @@ jobs:
       - name: Download OBS Dependencies
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2024-03-26/windows-x64.zip" -OutFile "obs-deps.zip"
+          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2025-08-23/windows-x64.zip" -OutFile "obs-deps.zip"
           Expand-Archive -Path "obs-deps.zip" -DestinationPath "obs-deps"
 
       # Step C: Tell CMake where everything is
