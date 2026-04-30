@@ -12,5 +12,16 @@
 Thumbs.db
 .DS_Store
 
-# Distribution staging (keep folder structure but ignore generated zip)
+# Distribution staging (keep folder structure but ignore generated files)
 /dist/*.zip
+
+# Compiled Binaries & Symbols (Catch-all)
+*.dll
+*.so
+*.dylib
+*.exe
+*.pdb
+*.lib
+*.exp
+*.o
+*.obj
