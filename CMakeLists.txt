@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.30)
 
-project(obs-multistream-plugin VERSION 0.1.0 LANGUAGES CXX)
+project(obs-multistream-plugin VERSION 1.0.0 LANGUAGES CXX)
+
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,10 +19,26 @@ find_package(libobs REQUIRED)
 find_package(obs-frontend-api REQUIRED)
 find_package(Qt6 COMPONENTS Widgets REQUIRED)
 
-add_library(obs-multistream-plugin MODULE
+set(_plugin_sources
     src/plugin-main.cpp
     src/destination_rules.cpp
 )
+if(WIN32)
+    list(APPEND _plugin_sources src/version.rc)
+endif()
+
+add_library(obs-multistream-plugin MODULE ${_plugin_sources})
+
+if(WIN32)
+    target_compile_definitions(obs-multistream-plugin PRIVATE
+        PLUGIN_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+        PLUGIN_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+        PLUGIN_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+        PLUGIN_VERSION_BUILD=0
+    )
+    set_source_files_properties(src/version.rc PROPERTIES COMPILE_DEFINITIONS
+        "PLUGIN_VERSION_MAJOR=${PROJECT_VERSION_MAJOR};PLUGIN_VERSION_MINOR=${PROJECT_VERSION_MINOR};PLUGIN_VERSION_PATCH=${PROJECT_VERSION_PATCH};PLUGIN_VERSION_BUILD=0")
+endif()
 
 target_include_directories(obs-multistream-plugin PRIVATE src)
 

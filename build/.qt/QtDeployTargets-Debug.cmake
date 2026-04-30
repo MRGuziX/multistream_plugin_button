@@ -1,6 +1,0 @@
-set(__QT_DEPLOY_TARGET_obs-multistream-plugin_FILE C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/build/Debug/obs-multistream-plugin.dll)
-set(__QT_DEPLOY_TARGET_obs-multistream-plugin_TYPE MODULE_LIBRARY)
-set(__QT_DEPLOY_TARGET_obs-multistream-plugin_RUNTIME_DLLS C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/third_party/obs-studio/build/libobs/Debug/obs.dll;C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/third_party/obs-studio/build/frontend/api/Debug/obs-frontend-api.dll;C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/third_party/obs-studio/.deps/obs-deps-qt6-2025-08-23-x64/bin/Qt6Widgetsd.dll;C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/third_party/obs-studio/build/deps/w32-pthreads/Debug/w32-pthreads.dll;C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/third_party/obs-studio/.deps/obs-deps-qt6-2025-08-23-x64/bin/Qt6Guid.dll;C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/third_party/obs-studio/.deps/obs-deps-qt6-2025-08-23-x64/bin/Qt6Cored.dll)
-set(__QT_DEPLOY_TARGET_destination-rules-tests_FILE C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/build/Debug/destination-rules-tests.exe)
-set(__QT_DEPLOY_TARGET_destination-rules-tests_TYPE EXECUTABLE)
-set(__QT_DEPLOY_TARGET_destination-rules-tests_RUNTIME_DLLS )

@@ -1279,6 +1279,18 @@ void create_dock()
     g_dock->setWidget(container);
 
     main_window->addDockWidget(Qt::RightDockWidgetArea, g_dock);
+
+    // Allow the user to reopen the dock after closing it via the X button by adding
+    // an entry to the OBS Tools menu.
+    obs_frontend_add_tools_menu_item("Multistream Destinations", [](void *) {
+        if (!g_dock) {
+            return;
+        }
+        g_dock->setVisible(true);
+        g_dock->show();
+        g_dock->raise();
+        g_dock->activateWindow();
+    }, nullptr);
 }
 
 void destroy_dock()
