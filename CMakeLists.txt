@@ -136,18 +136,17 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(unit-tests
     tests/test_main.cpp
     tests/dock_refresh_stub.cpp
+    tests/plugin_state_test_stub.cpp
+    tests/multistream_manager_unit_stub.cpp
     tests/destination_rules_tests.cpp
     tests/config_io_tests.cpp
     src/config_io.cpp
-    src/plugin_state.cpp
     src/stream_key_storage.cpp
     src/destination_rules.cpp
-    src/multistream_manager.cpp
-    src/multistream_manager_signals.cpp
 )
 target_include_directories(unit-tests PRIVATE src)
 target_compile_features(unit-tests PRIVATE cxx_std_17)
-target_link_libraries(unit-tests PRIVATE Catch2::Catch2 Qt6::Core OBS::libobs OBS::obs-frontend-api)
+target_link_libraries(unit-tests PRIVATE Catch2::Catch2 OBS::libobs OBS::obs-frontend-api)
 
 if(WIN32)
     target_link_libraries(unit-tests PRIVATE crypt32)
