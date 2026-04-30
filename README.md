@@ -63,16 +63,21 @@ cmake -S third_party/obs-studio -B build-obs `
   -DDEPS_INSTALL_DIR="<path-to-extracted-obs-deps>" `
   -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF `
   -DCMAKE_INSTALL_PREFIX="<absolute-path>\obs-install"
-cmake --build build-obs --config Release --target install
+cmake --build build-obs --config Release
+cmake --install build-obs --config Release --prefix "<absolute-path>\obs-install" --component Development
 ```
+
+Upstream OBS installs `libobsConfig.cmake` and related files as **Development** with `EXCLUDE_FROM_ALL`, so the `--component Development` install step above is required; a plain `cmake --build ... --target install` often leaves those files out and `find_package(libobs)` fails.
 
 **3. Configure the plugin**
 
-CMake must find `libobs`, `obs-frontend-api`, and Qt6. Pass both the OBS install prefix and the obs-deps layout on `CMAKE_PREFIX_PATH` (semicolon-separated on Windows):
+CMake must find `libobs`, `obs-frontend-api`, and Qt6. Pass the OBS install prefix and obs-deps on `CMAKE_PREFIX_PATH` (semicolon-separated on Windows). If CMake still cannot find `libobs`, pass the directory that contains `libobsConfig.cmake` (often `obs-install\cmake` on Windows—confirm with `Get-ChildItem -Recurse -Filter libobsConfig.cmake` under your prefix):
 
 ```powershell
 cmake -S . -B build `
-  -DCMAKE_PREFIX_PATH="<absolute-path>\obs-install;<path-to-extracted-obs-deps>"
+  -DCMAKE_PREFIX_PATH="<absolute-path>\obs-install;<path-to-extracted-obs-deps>" `
+  -Dlibobs_DIR="<folder-containing-libobsConfig.cmake>" `
+  -Dobs-frontend-api_DIR="<folder-containing-obs-frontend-apiConfig.cmake>"
 ```
 
 Optional: instead of putting OBS on `CMAKE_PREFIX_PATH`, you can set `-DOBS_SDK_HINT=<absolute-path>\obs-install`.

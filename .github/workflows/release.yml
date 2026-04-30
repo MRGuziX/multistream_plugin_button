@@ -28,10 +28,39 @@ jobs:
       - name: Build libobs Core
         run: |
           cmake -S third_party/obs-studio -B build-obs -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64" -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
-          cmake --build build-obs --config Release --target install
+          cmake --build build-obs --config Release
+
+      # OBS installs CMake packages (libobsConfig.cmake, etc.) with COMPONENT Development + EXCLUDE_FROM_ALL.
+      # `cmake --build --target install` often skips those rules. Install the Development component explicitly.
+      - name: Install libobs into prefix (Development)
+        shell: pwsh
+        run: |
+          $prefix = "${{ github.workspace }}/obs-install"
+          cmake --install build-obs --config Release --prefix $prefix --component Development
+          $cfg = Get-ChildItem -Path $prefix -Recurse -Filter libobsConfig.cmake -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $cfg) {
+            Write-Error "libobsConfig.cmake not found under $prefix after Development install."
+            Get-ChildItem -Path $prefix -Recurse -ErrorAction SilentlyContinue | Select-Object -First 50 FullName
+            exit 1
+          }
+          Write-Host "Found $($cfg.FullName)"
 
       - name: Configure Plugin CMake
-        run: cmake -B build -S . -DCMAKE_PREFIX_PATH="${{ github.workspace }}/obs-install;${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64"
+        shell: pwsh
+        run: |
+          $ws = "${{ github.workspace }}"
+          $prefix = "$ws/obs-install"
+          $deps = "$ws/obs-deps/windows-deps-2025-08-23-x64"
+          $libobsCfg = Get-ChildItem -Path $prefix -Recurse -Filter libobsConfig.cmake | Select-Object -First 1
+          $feCfg = Get-ChildItem -Path $prefix -Recurse -Filter "obs-frontend-apiConfig.cmake" | Select-Object -First 1
+          if (-not $libobsCfg -or -not $feCfg) {
+            Write-Error "Missing CMake package files under $prefix (libobs or obs-frontend-api)."
+            exit 1
+          }
+          cmake -B build -S . `
+            "-DCMAKE_PREFIX_PATH=$prefix;$deps" `
+            "-Dlibobs_DIR=$($libobsCfg.DirectoryName)" `
+            "-Dobs-frontend-api_DIR=$($feCfg.DirectoryName)"
 
       - name: Build Plugin
         run: cmake --build build --config Release
