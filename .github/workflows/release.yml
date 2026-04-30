@@ -57,10 +57,20 @@ jobs:
             Write-Error "Missing CMake package files under $prefix (libobs or obs-frontend-api)."
             exit 1
           }
+          # Put obs-deps first so FindSIMDe / Qt deps resolve (semicolons in -D values are easy to mishandle in pwsh).
+          $env:CMAKE_PREFIX_PATH = "$deps;$prefix"
+          $simdeHeader = Get-ChildItem -Path $deps -Recurse -Filter simde-common.h -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '[\\/]simde[\\/]simde-common\.h$' } |
+            Select-Object -First 1
+          if (-not $simdeHeader) {
+            Write-Error "simde-common.h not found under obs-deps ($deps). Check DEPS_INSTALL_DIR vs extracted zip layout."
+            exit 1
+          }
+          $simdeInclude = $simdeHeader.Directory.Parent.FullName
           cmake -B build -S . `
-            "-DCMAKE_PREFIX_PATH=$prefix;$deps" `
             "-Dlibobs_DIR=$($libobsCfg.DirectoryName)" `
-            "-Dobs-frontend-api_DIR=$($feCfg.DirectoryName)"
+            "-Dobs-frontend-api_DIR=$($feCfg.DirectoryName)" `
+            "-DSIMDe_INCLUDE_DIR=$simdeInclude"
 
       - name: Build Plugin
         run: cmake --build build --config Release

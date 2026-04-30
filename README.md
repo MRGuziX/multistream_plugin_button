@@ -71,14 +71,17 @@ Upstream OBS installs `libobsConfig.cmake` and related files as **Development** 
 
 **3. Configure the plugin**
 
-CMake must find `libobs`, `obs-frontend-api`, and Qt6. Pass the OBS install prefix and obs-deps on `CMAKE_PREFIX_PATH` (semicolon-separated on Windows). If CMake still cannot find `libobs`, pass the directory that contains `libobsConfig.cmake` (often `obs-install\cmake` on Windows—confirm with `Get-ChildItem -Recurse -Filter libobsConfig.cmake` under your prefix):
+CMake must find `libobs`, `obs-frontend-api`, Qt6, and **SIMDe** (headers ship in obs-deps; `libobsConfig.cmake` pulls them in via `find_dependency(SIMDe)`). Put **obs-deps before** your OBS install on `CMAKE_PREFIX_PATH`. On Windows PowerShell, semicolons inside `-D` strings are easy to get wrong—prefer setting the environment variable, then run `cmake`:
 
 ```powershell
+$env:CMAKE_PREFIX_PATH = "<path-to-extracted-obs-deps>;<absolute-path>\obs-install"
 cmake -S . -B build `
-  -DCMAKE_PREFIX_PATH="<absolute-path>\obs-install;<path-to-extracted-obs-deps>" `
   -Dlibobs_DIR="<folder-containing-libobsConfig.cmake>" `
-  -Dobs-frontend-api_DIR="<folder-containing-obs-frontend-apiConfig.cmake>"
+  -Dobs-frontend-api_DIR="<folder-containing-obs-frontend-apiConfig.cmake>" `
+  -DSIMDe_INCLUDE_DIR="<obs-deps>\include"
 ```
+
+If `simde\simde-common.h` is not under `<obs-deps>\include`, locate it with `Get-ChildItem -Recurse -Filter simde-common.h` and set `-DSIMDe_INCLUDE_DIR` to the parent directory of the `simde` folder (usually `...\include`).
 
 Optional: instead of putting OBS on `CMAKE_PREFIX_PATH`, you can set `-DOBS_SDK_HINT=<absolute-path>\obs-install`.
 
