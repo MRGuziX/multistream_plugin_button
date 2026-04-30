@@ -1,52 +1,53 @@
 name: Build and Release Plugin
 
-# 1. WHEN SHOULD THIS RUN?
 on:
   push:
     tags:
       - 'v*'
 
-# 2. WHAT SHOULD IT DO?
 jobs:
   build-windows:
     name: Build for Windows
     runs-on: windows-latest
 
     steps:
-      # Step A: Download code and the OBS submodule
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # Step B: Download the pre-compiled OBS dependencies
-      - name: Download OBS Dependencies
+      - name: Build OBS Studio
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2025-08-23/windows-deps-2025-08-23-x64.zip" -OutFile "obs-deps.zip"
-          Expand-Archive -Path "obs-deps.zip" -DestinationPath "obs-deps"
+          cmake -S third_party/obs-studio -B build-obs `
+            -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF `
+            -DENABLE_BROWSER=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
+          cmake --build build-obs --config Release
+          cmake --install build-obs --config Release
+          cmake --install build-obs --config Release --component Development
 
-      # Step C: Compile a minimal version of OBS (just the core libobs, no UI)
-      - name: Build libobs Core
+      - name: Configure Plugin
+        shell: pwsh
         run: |
-          cmake -S third_party/obs-studio -B build-obs -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64" -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
-          cmake --build build-obs --config Release --target install
+          $qt6Path = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-qt6-*" -Directory | Select-Object -First 1).FullName
+          $depsPath = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-20*" -Directory | Select-Object -First 1).FullName
+          
+          # Explicitly define where the libobsConfig.cmake was installed
+          $libobsDir = "${{ github.workspace }}/obs-install/lib/cmake/libobs"
+          
+          cmake -B build -S . `
+            -Dlibobs_DIR="$libobsDir" `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/obs-install;$qt6Path;$depsPath"
 
-      # Step D: Tell your plugin CMake where to find the deps AND the newly built libobs
-      - name: Configure Plugin CMake
-        run: cmake -B build -S . -DCMAKE_PREFIX_PATH="D:/a/obs_multistream_plugin/obs_multistream_plugin/obs-install" -Dlibobs_DIR="D:/a/obs_multistream_plugin/obs_multistream_plugin/obs-install/lib/cmake/libobs"
-
-      # Step E: Compile the actual .dll!
       - name: Build Plugin
         run: cmake --build build --config Release
 
-      # Step F: Package the dist/ folder into a neat .zip file
       - name: Zip Release
         shell: pwsh
         run: |
-          Compress-Archive -Path dist\* -DestinationPath obs-multistream-plugin-windows.zip
+          # Note: Adjust the path 'build/Release' if your plugin outputs to a different folder
+          Compress-Archive -Path "build/Release/*" -DestinationPath obs-multistream-plugin-windows.zip
 
-      # Step G: Upload that .zip file to your GitHub Releases page automatically
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
