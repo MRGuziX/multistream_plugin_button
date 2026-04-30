@@ -103,8 +103,26 @@ jobs:
       - name: Build Plugin
         run: cmake --build build --config Release
 
+      # unit-tests links libobs / obs-frontend-api — Windows needs those DLLs on PATH (0xc0000135 otherwise).
       - name: Run tests
-        run: ctest --test-dir build -C Release --output-on-failure
+        shell: pwsh
+        run: |
+          $ws = "${{ github.workspace }}"
+          $prefix = Join-Path $ws "obs-install"
+          $depsPath = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-20*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          $qt6Path = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-qt6-*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          $binDirs = @(
+            (Join-Path $prefix "bin\64bit"),
+            (Join-Path $prefix "bin")
+          )
+          if ($depsPath) { $binDirs += (Join-Path $depsPath "bin") }
+          if ($qt6Path) { $binDirs += (Join-Path $qt6Path "bin") }
+          $existing = $binDirs | Where-Object { Test-Path $_ }
+          if ($existing.Count -gt 0) {
+            $env:PATH = ($existing -join ';') + ';' + $env:PATH
+            Write-Host "Prepended to PATH:" ($existing -join '; ')
+          }
+          ctest --test-dir build -C Release --output-on-failure
 
       - name: Install plugin layout to dist/
         run: cmake --install build --config Release --prefix "${{ github.workspace }}/dist"
