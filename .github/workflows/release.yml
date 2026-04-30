@@ -34,7 +34,7 @@ jobs:
 
       # Step D: Tell your plugin CMake where to find the deps AND the newly built libobs
       - name: Configure Plugin CMake
-        run: cmake -B build -S . -DCMAKE_PREFIX_PATH="${{ github.workspace }}/obs-install;${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64"
+        run: cmake -B build -S . -DCMAKE_PREFIX_PATH="D:/a/obs_multistream_plugin/obs_multistream_plugin/obs-install" -Dlibobs_DIR="D:/a/obs_multistream_plugin/obs_multistream_plugin/obs-install/lib/cmake/libobs"
 
       # Step E: Compile the actual .dll!
       - name: Build Plugin
