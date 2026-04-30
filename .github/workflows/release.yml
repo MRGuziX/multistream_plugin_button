@@ -24,10 +24,27 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2025-08-23/windows-deps-2025-08-23-x64.zip" -OutFile "obs-deps.zip"
           Expand-Archive -Path "obs-deps.zip" -DestinationPath "obs-deps"
+          $ws = "${{ github.workspace }}"
+          $explicit = Join-Path $ws "obs-deps/windows-deps-2025-08-23-x64"
+          if (Test-Path $explicit) {
+            $depsRoot = (Resolve-Path $explicit).Path
+          } else {
+            $fallback = Get-ChildItem (Join-Path $ws "obs-deps") -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like "windows-deps-*" } |
+              Select-Object -First 1
+            if (-not $fallback) {
+              Write-Error "Could not find windows-deps-* under obs-deps after unzip. Listing obs-deps:"
+              Get-ChildItem (Join-Path $ws "obs-deps") -ErrorAction SilentlyContinue
+              exit 1
+            }
+            $depsRoot = $fallback.FullName
+          }
+          "DEPS_INSTALL_PATH=$depsRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Using DEPS_INSTALL_PATH=$depsRoot"
 
       - name: Build libobs Core
         run: |
-          cmake -S third_party/obs-studio -B build-obs -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64" -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
+          cmake -S third_party/obs-studio -B build-obs -DDEPS_INSTALL_DIR="${{ env.DEPS_INSTALL_PATH }}" -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
           cmake --build build-obs --config Release
 
       # OBS installs CMake packages (libobsConfig.cmake, etc.) with COMPONENT Development + EXCLUDE_FROM_ALL.
@@ -50,23 +67,37 @@ jobs:
         run: |
           $ws = "${{ github.workspace }}"
           $prefix = "$ws/obs-install"
-          $deps = "$ws/obs-deps/windows-deps-2025-08-23-x64"
+          $deps = "${{ env.DEPS_INSTALL_PATH }}"
           $libobsCfg = Get-ChildItem -Path $prefix -Recurse -Filter libobsConfig.cmake | Select-Object -First 1
           $feCfg = Get-ChildItem -Path $prefix -Recurse -Filter "obs-frontend-apiConfig.cmake" | Select-Object -First 1
           if (-not $libobsCfg -or -not $feCfg) {
             Write-Error "Missing CMake package files under $prefix (libobs or obs-frontend-api)."
             exit 1
           }
-          # Put obs-deps first so FindSIMDe / Qt deps resolve (semicolons in -D values are easy to mishandle in pwsh).
-          $env:CMAKE_PREFIX_PATH = "$deps;$prefix"
-          $simdeHeader = Get-ChildItem -Path $deps -Recurse -Filter simde-common.h -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '[\\/]simde[\\/]simde-common\.h$' } |
-            Select-Object -First 1
-          if (-not $simdeHeader) {
-            Write-Error "simde-common.h not found under obs-deps ($deps). Check DEPS_INSTALL_DIR vs extracted zip layout."
+          # Prefer SIMDe path from libobs configure (same as DEPS_INSTALL_DIR layout).
+          $simdeInclude = $null
+          $cacheFile = Join-Path $ws "build-obs/CMakeCache.txt"
+          if (Test-Path $cacheFile) {
+            $cacheLine = Get-Content $cacheFile | Where-Object { $_ -match '^SIMDe_INCLUDE_DIR:' } | Select-Object -First 1
+            if ($cacheLine -and $cacheLine.Contains('=')) {
+              $simdeInclude = $cacheLine.Substring($cacheLine.IndexOf('=') + 1).Trim()
+            }
+          }
+          $simdeCheck = if ($simdeInclude) { Join-Path $simdeInclude (Join-Path "simde" "simde-common.h") } else { $null }
+          if (-not $simdeCheck -or -not (Test-Path -LiteralPath $simdeCheck)) {
+            $simdeHeader = Get-ChildItem -Path @($deps, "$ws/obs-deps", "$ws/build-obs") -Recurse -Filter simde-common.h -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '[\\/]simde[\\/]simde-common\.h$' } |
+              Select-Object -First 1
+            if ($simdeHeader) {
+              $simdeInclude = $simdeHeader.Directory.Parent.FullName
+            }
+          }
+          if (-not $simdeInclude -or -not (Test-Path -LiteralPath (Join-Path $simdeInclude (Join-Path "simde" "simde-common.h")))) {
+            Write-Error "SIMDe headers not found. Checked CMake cache, DEPS_INSTALL_PATH=$deps, obs-deps, build-obs."
             exit 1
           }
-          $simdeInclude = $simdeHeader.Directory.Parent.FullName
+          # Put obs-deps first so FindSIMDe / Qt deps resolve (semicolons in -D values are easy to mishandle in pwsh).
+          $env:CMAKE_PREFIX_PATH = "$deps;$prefix"
           cmake -B build -S . `
             "-Dlibobs_DIR=$($libobsCfg.DirectoryName)" `
             "-Dobs-frontend-api_DIR=$($feCfg.DirectoryName)" `
