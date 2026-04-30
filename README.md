@@ -54,9 +54,11 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 git submodule update --init --recursive
 ```
 
-**2. Build minimal OBS (example — matches CI)**
+**2. Build minimal OBS**
 
-Download the [obs-deps](https://github.com/obsproject/obs-deps/releases) archive for Windows that matches your OBS branch, extract it, then configure and install libobs only:
+The **GitHub Actions** release job builds the `third_party/obs-studio` submodule and lets OBS CMake fetch dependencies into `third_party/obs-studio/.deps/` (same pattern as tag **v1.0.8** — no separate obs-deps zip in CI).
+
+For a **local** Windows build you can instead download the [obs-deps](https://github.com/obsproject/obs-deps/releases) archive that matches your OBS branch, extract it, then configure and install libobs with `DEPS_INSTALL_DIR` pointing at that tree:
 
 ```powershell
 cmake -S third_party/obs-studio -B build-obs `

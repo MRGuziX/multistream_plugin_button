@@ -19,44 +19,27 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Download OBS Dependencies
+      # v1.0.8 style: no manual obs-deps zip — OBS CMake fetches into third_party/obs-studio/.deps/
+      - name: Build OBS Studio (minimal flags, matches v1.0.8)
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2025-08-23/windows-deps-2025-08-23-x64.zip" -OutFile "obs-deps.zip"
-          Expand-Archive -Path "obs-deps.zip" -DestinationPath "obs-deps"
           $ws = "${{ github.workspace }}"
-          $explicit = Join-Path $ws "obs-deps/windows-deps-2025-08-23-x64"
-          if (Test-Path $explicit) {
-            $depsRoot = (Resolve-Path $explicit).Path
-          } else {
-            $fallback = Get-ChildItem (Join-Path $ws "obs-deps") -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -like "windows-deps-*" } |
-              Select-Object -First 1
-            if (-not $fallback) {
-              Write-Error "Could not find windows-deps-* under obs-deps after unzip. Listing obs-deps:"
-              Get-ChildItem (Join-Path $ws "obs-deps") -ErrorAction SilentlyContinue
-              exit 1
-            }
-            $depsRoot = $fallback.FullName
-          }
-          "DEPS_INSTALL_PATH=$depsRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Using DEPS_INSTALL_PATH=$depsRoot"
-
-      - name: Build libobs Core
-        run: |
-          cmake -S third_party/obs-studio -B build-obs -DDEPS_INSTALL_DIR="${{ env.DEPS_INSTALL_PATH }}" -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
+          cmake -S third_party/obs-studio -B build-obs `
+            -DENABLE_PLUGINS=OFF `
+            -DENABLE_SCRIPTING=OFF `
+            -DCMAKE_INSTALL_PREFIX="$ws/obs-install"
           cmake --build build-obs --config Release
 
-      # OBS installs CMake packages (libobsConfig.cmake, etc.) with COMPONENT Development + EXCLUDE_FROM_ALL.
-      # `cmake --build --target install` often skips those rules. Install the Development component explicitly.
-      - name: Install libobs into prefix (Development)
+      # libobsConfig.cmake is installed with COMPONENT Development + EXCLUDE_FROM_ALL
+      - name: Install libobs into prefix (Runtime + Development)
         shell: pwsh
         run: |
           $prefix = "${{ github.workspace }}/obs-install"
+          cmake --install build-obs --config Release --prefix $prefix
           cmake --install build-obs --config Release --prefix $prefix --component Development
           $cfg = Get-ChildItem -Path $prefix -Recurse -Filter libobsConfig.cmake -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $cfg) {
-            Write-Error "libobsConfig.cmake not found under $prefix after Development install."
+            Write-Error "libobsConfig.cmake not found under $prefix after install."
             Get-ChildItem -Path $prefix -Recurse -ErrorAction SilentlyContinue | Select-Object -First 50 FullName
             exit 1
           }
@@ -67,14 +50,19 @@ jobs:
         run: |
           $ws = "${{ github.workspace }}"
           $prefix = "$ws/obs-install"
-          $deps = "${{ env.DEPS_INSTALL_PATH }}"
           $libobsCfg = Get-ChildItem -Path $prefix -Recurse -Filter libobsConfig.cmake | Select-Object -First 1
           $feCfg = Get-ChildItem -Path $prefix -Recurse -Filter "obs-frontend-apiConfig.cmake" | Select-Object -First 1
           if (-not $libobsCfg -or -not $feCfg) {
             Write-Error "Missing CMake package files under $prefix (libobs or obs-frontend-api)."
             exit 1
           }
-          # Prefer SIMDe path from libobs configure (same as DEPS_INSTALL_DIR layout).
+          $depsPath = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-20*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          $qt6Path = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-qt6-*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if (-not $depsPath) {
+            Write-Error "No third_party/obs-studio/.deps/obs-deps-20* — OBS configure did not fetch dependencies. List .deps:"
+            Get-ChildItem "third_party/obs-studio/.deps" -ErrorAction SilentlyContinue
+            exit 1
+          }
           $simdeInclude = $null
           $cacheFile = Join-Path $ws "build-obs/CMakeCache.txt"
           if (Test-Path $cacheFile) {
@@ -85,19 +73,25 @@ jobs:
           }
           $simdeCheck = if ($simdeInclude) { Join-Path $simdeInclude (Join-Path "simde" "simde-common.h") } else { $null }
           if (-not $simdeCheck -or -not (Test-Path -LiteralPath $simdeCheck)) {
-            $simdeHeader = Get-ChildItem -Path @($deps, "$ws/obs-deps", "$ws/build-obs") -Recurse -Filter simde-common.h -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match '[\\/]simde[\\/]simde-common\.h$' } |
+            $roots = @($depsPath, "$ws/third_party/obs-studio/.deps", "$ws/build-obs")
+            if ($qt6Path) { $roots += $qt6Path }
+            $simdeHeader = $roots | ForEach-Object {
+              Get-ChildItem -Path $_ -Recurse -Filter simde-common.h -ErrorAction SilentlyContinue
+            } | Where-Object { $_.FullName -match '[\\/]simde[\\/]simde-common\.h$' } |
               Select-Object -First 1
             if ($simdeHeader) {
               $simdeInclude = $simdeHeader.Directory.Parent.FullName
             }
           }
           if (-not $simdeInclude -or -not (Test-Path -LiteralPath (Join-Path $simdeInclude (Join-Path "simde" "simde-common.h")))) {
-            Write-Error "SIMDe headers not found. Checked CMake cache, DEPS_INSTALL_PATH=$deps, obs-deps, build-obs."
+            Write-Error "SIMDe headers not found (cache, .deps, build-obs)."
             exit 1
           }
-          # Put obs-deps first so FindSIMDe / Qt deps resolve (semicolons in -D values are easy to mishandle in pwsh).
-          $env:CMAKE_PREFIX_PATH = "$deps;$prefix"
+          # Same order as tag v1.0.8: install prefix, cmake exports, Qt from .deps, main deps from .deps
+          $parts = @($prefix, (Join-Path $prefix "cmake"))
+          if ($qt6Path) { $parts += $qt6Path }
+          $parts += $depsPath
+          $env:CMAKE_PREFIX_PATH = $parts -join ';'
           cmake -B build -S . `
             "-Dlibobs_DIR=$($libobsCfg.DirectoryName)" `
             "-Dobs-frontend-api_DIR=$($feCfg.DirectoryName)" `
