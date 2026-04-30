@@ -1,0 +1,1 @@
+C:/Users/Tomasz/CLionProjects/obs_multistream_plugin/dist\obs-multistream-plugin/obs-plugins/obs-multistream-plugin.dll

@@ -4,6 +4,9 @@
     <ClCompile Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\src\plugin-main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\src\destination_rules.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\third_party\obs-studio\build\libobs\libobs_EXPORT.h">

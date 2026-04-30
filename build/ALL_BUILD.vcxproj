@@ -178,6 +178,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </ProjectReference>
+    <ProjectReference Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\build\destination-rules-tests.vcxproj">
+      <Project>{3941E41B-D04C-382B-8585-0CC540A37DE4}</Project>
+      <Name>destination-rules-tests</Name>
+    </ProjectReference>
     <ProjectReference Include="C:\Users\Tomasz\CLionProjects\obs_multistream_plugin\build\obs-multistream-plugin.vcxproj">
       <Project>{4CA6A2CA-12FF-3FC5-838A-04D0B79588A6}</Project>
       <Name>obs-multistream-plugin</Name>

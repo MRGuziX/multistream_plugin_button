@@ -17,7 +17,10 @@ find_package(Qt6 COMPONENTS Widgets REQUIRED)
 
 add_library(obs-multistream-plugin MODULE
     src/plugin-main.cpp
+    src/destination_rules.cpp
 )
+
+target_include_directories(obs-multistream-plugin PRIVATE src)
 
 target_link_libraries(obs-multistream-plugin PRIVATE OBS::libobs OBS::obs-frontend-api Qt6::Widgets)
 
@@ -38,3 +41,20 @@ install(TARGETS obs-multistream-plugin
     RUNTIME DESTINATION obs-plugins
     LIBRARY DESTINATION obs-plugins
 )
+
+enable_testing()
+
+add_executable(destination-rules-tests
+    tests/destination_rules_tests.cpp
+    src/destination_rules.cpp
+)
+target_include_directories(destination-rules-tests PRIVATE src)
+target_compile_features(destination-rules-tests PRIVATE cxx_std_17)
+
+if(MSVC)
+    target_compile_options(destination-rules-tests PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(destination-rules-tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME destination-rules-tests COMMAND destination-rules-tests)
