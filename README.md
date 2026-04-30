@@ -43,19 +43,53 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 
 ### Build from source
 
-Prerequisites: Windows, Visual Studio 2022 (with C++ workload), CMake 3.20+, and the OBS Studio SDK headers and import libraries (already vendored under `third_party/` for this project).
+**Prerequisites**
+
+- **Windows:** Visual Studio 2022 (C++ desktop workload), **CMake 3.16+**, and **Qt 6** (Widgets; the build uses the same `find_package(Qt6 ...)` as the plugin).
+- A **libobs** + **obs-frontend-api** install that provides `libobsConfig.cmake` and `obs-frontend-api` CMake package (import libraries and headers on Windows). This project does *not* ship a full prebuilt SDK in-tree; the typical approach is to build a **minimal OBS** from the `third_party/obs-studio` submodule and install it to a prefix, or to point CMake at an existing OBS development tree.
+
+**1. Fetch submodules**
 
 ```powershell
-cmake -S . -B build
+git submodule update --init --recursive
+```
+
+**2. Build minimal OBS (example — matches CI)**
+
+Download the [obs-deps](https://github.com/obsproject/obs-deps/releases) archive for Windows that matches your OBS branch, extract it, then configure and install libobs only:
+
+```powershell
+cmake -S third_party/obs-studio -B build-obs `
+  -DDEPS_INSTALL_DIR="<path-to-extracted-obs-deps>" `
+  -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF `
+  -DCMAKE_INSTALL_PREFIX="<absolute-path>\obs-install"
+cmake --build build-obs --config Release --target install
+```
+
+**3. Configure the plugin**
+
+CMake must find `libobs`, `obs-frontend-api`, and Qt6. Pass both the OBS install prefix and the obs-deps layout on `CMAKE_PREFIX_PATH` (semicolon-separated on Windows):
+
+```powershell
+cmake -S . -B build `
+  -DCMAKE_PREFIX_PATH="<absolute-path>\obs-install;<path-to-extracted-obs-deps>"
+```
+
+Optional: instead of putting OBS on `CMAKE_PREFIX_PATH`, you can set `-DOBS_SDK_HINT=<absolute-path>\obs-install`.
+
+**4. Build and test**
+
+```powershell
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
 The built plugin will be at `build\Release\obs-multistream-plugin.dll`. Copy it into OBS's `obs-plugins\64bit\` directory as described above.
 
-To run the unit tests:
+To install the same layout the release zip uses (plugin binary + `data/locale/...`):
 
 ```powershell
-ctest --test-dir build -C Release --output-on-failure
+cmake --install build --config Release --prefix dist
 ```
 
 ---

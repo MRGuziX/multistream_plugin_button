@@ -13,6 +13,11 @@ struct Destination {
     bool is_default = false;     // Mirror of OBS's primary streaming service (Settings -> Stream).
                                  // Locked entry: not editable / removable, not persisted, not started by us.
     std::string notes;
+    // Empty video_encoder_id means default (obs_x264 / first available). Set from UI or JSON.
+    std::string video_encoder_id;
+    // 0 = encoder default. Otherwise typically kbps (matches OBS encoder "bitrate" field).
+    int video_bitrate_kbps = 0;
+    int audio_bitrate_kbps = 0;
 };
 
 enum class PlatformKind {
