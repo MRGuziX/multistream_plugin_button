@@ -1,6 +1,32 @@
 cmake_minimum_required(VERSION 3.30)
 
-project(obs-multistream-plugin VERSION 1.0.0 LANGUAGES CXX)
+find_package(Git QUIET)
+set(_git_desc "")
+if(GIT_FOUND)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" describe --tags --always --match "v*"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE _git_desc
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+
+set(_maj 1)
+set(_min 0)
+set(_pat 0)
+if(_git_desc MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    set(_maj "${CMAKE_MATCH_1}")
+    set(_min "${CMAKE_MATCH_2}")
+    set(_pat "${CMAKE_MATCH_3}")
+endif()
+
+project(obs-multistream-plugin VERSION "${_maj}.${_min}.${_pat}" LANGUAGES CXX)
+
+set(_plugin_ui "${_git_desc}")
+if(_plugin_ui STREQUAL "")
+    set(_plugin_ui "v${PROJECT_VERSION}")
+endif()
 
 if(WIN32)
     enable_language(RC)
@@ -22,6 +48,7 @@ find_package(Qt6 COMPONENTS Widgets REQUIRED)
 set(_plugin_sources
     src/plugin-main.cpp
     src/destination_rules.cpp
+    src/stream_key_storage.cpp
 )
 if(WIN32)
     list(APPEND _plugin_sources src/version.rc)
@@ -38,6 +65,21 @@ if(WIN32)
     )
     set_source_files_properties(src/version.rc PROPERTIES COMPILE_DEFINITIONS
         "PLUGIN_VERSION_MAJOR=${PROJECT_VERSION_MAJOR};PLUGIN_VERSION_MINOR=${PROJECT_VERSION_MINOR};PLUGIN_VERSION_PATCH=${PROJECT_VERSION_PATCH};PLUGIN_VERSION_BUILD=0")
+    target_link_libraries(obs-multistream-plugin PRIVATE crypt32)
+endif()
+
+if(APPLE)
+    find_library(_multistream_corefoundation CoreFoundation REQUIRED)
+    find_library(_multistream_security Security REQUIRED)
+    target_link_libraries(obs-multistream-plugin PRIVATE "${_multistream_corefoundation}" "${_multistream_security}")
+endif()
+
+if(UNIX AND NOT APPLE)
+    find_package(OpenSSL)
+    if(OpenSSL_FOUND)
+        target_link_libraries(obs-multistream-plugin PRIVATE OpenSSL::Crypto)
+        target_compile_definitions(obs-multistream-plugin PRIVATE STREAM_KEY_USE_OPENSSL=1)
+    endif()
 endif()
 
 target_include_directories(obs-multistream-plugin PRIVATE src)
@@ -45,6 +87,10 @@ target_include_directories(obs-multistream-plugin PRIVATE src)
 target_link_libraries(obs-multistream-plugin PRIVATE OBS::libobs OBS::obs-frontend-api Qt6::Widgets)
 
 target_compile_features(obs-multistream-plugin PRIVATE cxx_std_17)
+
+target_compile_definitions(obs-multistream-plugin PRIVATE
+    "PLUGIN_UI_VERSION_STRING=\"${_plugin_ui}\""
+)
 
 if(MSVC)
     target_compile_options(obs-multistream-plugin PRIVATE /W4 /permissive-)
