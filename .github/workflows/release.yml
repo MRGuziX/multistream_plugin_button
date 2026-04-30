@@ -1,0 +1,49 @@
+name: Build and Release Plugin
+
+# 1. WHEN SHOULD THIS RUN?
+# We only want to build a release when you push a new version tag (like v1.0.0)
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 2. WHAT SHOULD IT DO?
+jobs:
+  build-windows:
+    name: Build for Windows
+    runs-on: windows-latest # Boot up a clean Windows machine in the cloud
+
+    steps:
+      # Step A: Download your code and the OBS submodule
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive # CRITICAL: This pulls in the third_party/obs-studio code!
+
+      # Step B: Download the pre-compiled OBS dependencies (Qt, FFmpeg, etc.)
+      - name: Download OBS Dependencies
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2024-03-26/windows-x64.zip" -OutFile "obs-deps.zip"
+          Expand-Archive -Path "obs-deps.zip" -DestinationPath "obs-deps"
+
+      # Step C: Tell CMake where everything is
+      - name: Configure CMake
+        run: cmake -B build -S . -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps"
+
+      # Step D: Compile the actual .dll!
+      - name: Build Plugin
+        run: cmake --build build --config Release
+
+      # Step E: Package the dist/ folder into a neat .zip file
+      - name: Zip Release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\* -DestinationPath obs-multistream-plugin-windows.zip
+
+      # Step F: Upload that .zip file to your GitHub Releases page automatically
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: obs-multistream-plugin-windows.zip
+          generate_release_notes: true
