@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.30)
+cmake_minimum_required(VERSION 3.16)
 
 find_package(Git QUIET)
 set(_git_desc "")
@@ -47,6 +47,11 @@ find_package(Qt6 COMPONENTS Widgets REQUIRED)
 
 set(_plugin_sources
     src/plugin-main.cpp
+    src/plugin_state.cpp
+    src/config_io.cpp
+    src/dock_ui.cpp
+    src/multistream_manager.cpp
+    src/multistream_manager_signals.cpp
     src/destination_rules.cpp
     src/stream_key_storage.cpp
 )
@@ -108,19 +113,56 @@ install(TARGETS obs-multistream-plugin
     LIBRARY DESTINATION obs-plugins
 )
 
+install(FILES data/locale/en-US.ini DESTINATION "data/obs-plugins/obs-multistream-plugin/locale")
+
 enable_testing()
 
-add_executable(destination-rules-tests
-    tests/destination_rules_tests.cpp
-    src/destination_rules.cpp
+include(FetchContent)
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.5.4
 )
-target_include_directories(destination-rules-tests PRIVATE src)
-target_compile_features(destination-rules-tests PRIVATE cxx_std_17)
+FetchContent_MakeAvailable(Catch2)
 
-if(MSVC)
-    target_compile_options(destination-rules-tests PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(destination-rules-tests PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(unit-tests
+    tests/test_main.cpp
+    tests/dock_refresh_stub.cpp
+    tests/destination_rules_tests.cpp
+    tests/config_io_tests.cpp
+    src/config_io.cpp
+    src/plugin_state.cpp
+    src/stream_key_storage.cpp
+    src/destination_rules.cpp
+    src/multistream_manager.cpp
+    src/multistream_manager_signals.cpp
+)
+target_include_directories(unit-tests PRIVATE src)
+target_compile_features(unit-tests PRIVATE cxx_std_17)
+target_link_libraries(unit-tests PRIVATE Catch2::Catch2 Qt6::Core OBS::libobs OBS::obs-frontend-api)
+
+if(WIN32)
+    target_link_libraries(unit-tests PRIVATE crypt32)
 endif()
 
-add_test(NAME destination-rules-tests COMMAND destination-rules-tests)
+if(APPLE)
+    find_library(_ut_corefoundation CoreFoundation REQUIRED)
+    find_library(_ut_security Security REQUIRED)
+    target_link_libraries(unit-tests PRIVATE "${_ut_corefoundation}" "${_ut_security}")
+endif()
+
+if(UNIX AND NOT APPLE)
+    find_package(OpenSSL)
+    if(OpenSSL_FOUND)
+        target_link_libraries(unit-tests PRIVATE OpenSSL::Crypto)
+        target_compile_definitions(unit-tests PRIVATE STREAM_KEY_USE_OPENSSL=1)
+    endif()
+endif()
+
+if(MSVC)
+    target_compile_options(unit-tests PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(unit-tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_test(NAME unit-tests COMMAND unit-tests)
