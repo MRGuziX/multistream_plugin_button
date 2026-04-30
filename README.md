@@ -29,17 +29,27 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 
 1. Download the latest Windows release asset (e.g. `obs-multistream-plugin-windows.zip`) from [**GitHub Releases**](https://github.com/MRGuziX/obs_multistream_plugin/releases). There is no committed `dist/` folder in the repo; artifacts are attached to each tagged release.
 2. Close OBS Studio.
-3. Extract the archive. Inside you will find:
+3. Extract the archive. Inside you will find the same layout CMake installs under an OBS prefix — the plugin binary **and** the English locale file:
    ```
    obs-plugins/
        obs-multistream-plugin.dll
+   data/
+       obs-plugins/
+           obs-multistream-plugin/
+               locale/
+                   en-US.ini
    ```
-4. Copy `obs-multistream-plugin.dll` into your OBS plugins directory:
+4. Copy **`obs-multistream-plugin.dll`** into your OBS **64-bit plugins** folder (next to other `.dll` plugins):
    ```
-   C:\Program Files\obs-studio\obs-plugins\64bit\
+   <OBS install>\obs-plugins\64bit\
    ```
-   (or wherever OBS is installed on your system).
-5. Start OBS. The new dock **Multistream Destinations** should be available under *View → Docks*.
+   For a default install that is often `C:\Program Files\obs-studio\obs-plugins\64bit\`.
+5. Copy the **`data`** tree so the locale file ends up under the OBS **data** root (OBS loads plugin strings from here). After copying, you should have:
+   ```
+   <OBS install>\data\obs-plugins\obs-multistream-plugin\locale\en-US.ini
+   ```
+   Concretely: merge the archive’s `data\obs-plugins\obs-multistream-plugin\` folder into `<OBS install>\data\obs-plugins\` (create `obs-multistream-plugin\locale\` if needed), so **`en-US.ini`** sits in that `locale` folder.
+6. Start OBS. The new dock **Multistream Destinations** should be available under *View → Docks*.
 
 ### Build from source
 
