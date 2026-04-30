@@ -18,6 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       # v1.0.8 style: no manual obs-deps zip — OBS CMake fetches into third_party/obs-studio/.deps/
       - name: Build OBS Studio (minimal flags, matches v1.0.8)
@@ -92,7 +93,9 @@ jobs:
           if ($qt6Path) { $parts += $qt6Path }
           $parts += $depsPath
           $env:CMAKE_PREFIX_PATH = $parts -join ';'
+          $releaseTag = "${{ github.ref_name }}"
           cmake -B build -S . `
+            "-DPLUGIN_VERSION_FROM_TAG=$releaseTag" `
             "-Dlibobs_DIR=$($libobsCfg.DirectoryName)" `
             "-Dobs-frontend-api_DIR=$($feCfg.DirectoryName)" `
             "-DSIMDe_INCLUDE_DIR=$simdeInclude"

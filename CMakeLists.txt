@@ -1,15 +1,23 @@
 cmake_minimum_required(VERSION 3.16)
 
-find_package(Git QUIET)
+# Set by release CI to the pushed tag (e.g. v1.1.4). Shallow checkouts often lack tag refs, so
+# `git describe` can fall back to 1.0.0; this forces the shipping version and dock label to match the tag.
+set(PLUGIN_VERSION_FROM_TAG "" CACHE STRING "Release tag (e.g. v1.2.3). CI sets this from the Git tag; leave empty for local `git describe`.")
+
 set(_git_desc "")
-if(GIT_FOUND)
-    execute_process(
-        COMMAND "${GIT_EXECUTABLE}" describe --tags --always --match "v*"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        OUTPUT_VARIABLE _git_desc
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-    )
+if(NOT PLUGIN_VERSION_FROM_TAG STREQUAL "")
+    string(STRIP "${PLUGIN_VERSION_FROM_TAG}" _git_desc)
+else()
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" describe --tags --always --match "v*"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _git_desc
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+    endif()
 endif()
 
 set(_maj 1)

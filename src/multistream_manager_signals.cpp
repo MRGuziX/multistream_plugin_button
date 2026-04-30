@@ -4,6 +4,7 @@
 
 #include <obs-module.h>
 
+#include <QDockWidget>
 #include <QTimer>
 
 #include <string>

@@ -6,6 +6,7 @@ namespace obs_multistream_detail {
 
 struct ObsServiceHolder {
     obs_service_t *p = nullptr;
+    ObsServiceHolder() = default;
     ~ObsServiceHolder()
     {
         clear();
@@ -29,6 +30,7 @@ struct ObsServiceHolder {
 
 struct ObsOutputHolder {
     obs_output_t *p = nullptr;
+    ObsOutputHolder() = default;
     ~ObsOutputHolder()
     {
         clear();
@@ -52,6 +54,7 @@ struct ObsOutputHolder {
 
 struct ObsEncoderHolder {
     obs_encoder_t *p = nullptr;
+    ObsEncoderHolder() = default;
     ~ObsEncoderHolder()
     {
         clear();

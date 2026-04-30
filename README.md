@@ -87,6 +87,8 @@ If `simde\simde-common.h` is not under `<obs-deps>\include`, locate it with `Get
 
 Optional: instead of putting OBS on `CMAKE_PREFIX_PATH`, you can set `-DOBS_SDK_HINT=<absolute-path>\obs-install`.
 
+The version label in the dock matches the `v*.*.*` prefix from `git describe`, unless you set **`-DPLUGIN_VERSION_FROM_TAG=v1.2.3`** at configure time (GitHub release builds pass the pushed tag this way so it always matches the shipping release).
+
 **4. Build and test**
 
 ```powershell

@@ -2,6 +2,7 @@
 #include <obs-frontend-api.h>
 #include <util/bmem.h>
 
+#include <QDockWidget>
 #include <QTimer>
 
 #include "multistream_manager.h"
