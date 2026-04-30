@@ -20,8 +20,10 @@ jobs:
         shell: pwsh
         run: |
           cmake -S third_party/obs-studio -B build-obs `
-            -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF `
-            -DENABLE_BROWSER=OFF -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
+            -DENABLE_PLUGINS=OFF `
+            -DENABLE_SCRIPTING=OFF `
+            -DENABLE_BROWSER=OFF `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/obs-install"
           cmake --build build-obs --config Release
           cmake --install build-obs --config Release
           cmake --install build-obs --config Release --component Development
@@ -31,22 +33,15 @@ jobs:
         run: |
           $qt6Path = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-qt6-*" -Directory | Select-Object -First 1).FullName
           $depsPath = (Get-ChildItem -Path "third_party/obs-studio/.deps/obs-deps-20*" -Directory | Select-Object -First 1).FullName
-          
-          # Explicitly define where the libobsConfig.cmake was installed
-          $libobsDir = "${{ github.workspace }}/obs-install/lib/cmake/libobs"
-          
           cmake -B build -S . `
-            -Dlibobs_DIR="$libobsDir" `
-            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/obs-install;$qt6Path;$depsPath"
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/obs-install;${{ github.workspace }}/obs-install/cmake;$qt6Path;$depsPath"
 
       - name: Build Plugin
         run: cmake --build build --config Release
 
       - name: Zip Release
         shell: pwsh
-        run: |
-          # Note: Adjust the path 'build/Release' if your plugin outputs to a different folder
-          Compress-Archive -Path "build/Release/*" -DestinationPath obs-multistream-plugin-windows.zip
+        run: Compress-Archive -Path dist\* -DestinationPath obs-multistream-plugin-windows.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
