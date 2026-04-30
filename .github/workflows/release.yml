@@ -20,16 +20,16 @@ jobs:
         with:
           submodules: recursive # CRITICAL: This pulls in the third_party/obs-studio code!
 
-      # Step B: Download the pre-compiled OBS dependencies (Qt, FFmpeg, etc.)
+      # Step B: Download the pre-compiled OBS dependencies
       - name: Download OBS Dependencies
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2025-08-23/windows-x64.zip" -OutFile "obs-deps.zip"
+          Invoke-WebRequest -Uri "https://github.com/obsproject/obs-deps/releases/download/2025-08-23/windows-deps-2025-08-23-x64.zip" -OutFile "obs-deps.zip"
           Expand-Archive -Path "obs-deps.zip" -DestinationPath "obs-deps"
 
-      # Step C: Tell CMake where everything is
+      # Step C: Tell CMake where everything is (pointing inside the extracted sub-folder)
       - name: Configure CMake
-        run: cmake -B build -S . -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps"
+        run: cmake -B build -S . -DDEPS_INSTALL_DIR="${{ github.workspace }}/obs-deps/windows-deps-2025-08-23-x64"
 
       # Step D: Compile the actual .dll!
       - name: Build Plugin
