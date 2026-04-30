@@ -39,6 +39,9 @@ jobs:
       - name: Build Plugin
         run: cmake --build build --config Release
 
+      - name: Install Plugin
+        run: cmake --install build --config Release --prefix dist
+
       - name: Zip Release
         shell: pwsh
         run: Compress-Archive -Path dist\* -DestinationPath obs-multistream-plugin-windows.zip
