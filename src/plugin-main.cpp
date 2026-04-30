@@ -1,5 +1,6 @@
 #include <obs-module.h>
 #include <obs-frontend-api.h>
+#include <util/bmem.h>
 
 #include "destination_rules.h"
 
@@ -23,13 +24,18 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace {
-constexpr const char *kPluginUiVersion = "v1.0.0";
+#include "stream_key_storage.h"
 
+#ifndef PLUGIN_UI_VERSION_STRING
+#define PLUGIN_UI_VERSION_STRING "v0.0.0-dev"
+#endif
+
+namespace {
 std::vector<Destination> g_destinations;
 QDockWidget *g_dock = nullptr;
 QTableWidget *g_destinations_table = nullptr;
@@ -55,6 +61,7 @@ struct RuntimeStatus {
 };
 
 std::unordered_map<std::string, RuntimeStatus> g_runtime_statuses;
+std::mutex g_runtime_status_mutex;
 
 std::string destination_id(const Destination &dst)
 {
@@ -98,6 +105,7 @@ void request_table_refresh()
 
 void set_runtime_status(const Destination &dst, RuntimeState state, const std::string &last_error = "")
 {
+    std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
     RuntimeStatus &status = g_runtime_statuses[destination_id(dst)];
     status.state = state;
     if (!last_error.empty()) {
@@ -117,6 +125,7 @@ void set_runtime_status(const Destination &dst, RuntimeState state, const std::s
 
 void set_runtime_retry_status(const Destination &dst, int attempt, int max_attempts, const std::string &retry_message)
 {
+    std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
     RuntimeStatus &status = g_runtime_statuses[destination_id(dst)];
     status.state = RuntimeState::Starting;
     status.retry_attempt = attempt;
@@ -128,6 +137,7 @@ void set_runtime_retry_status(const Destination &dst, int attempt, int max_attem
 
 void set_runtime_terminal_failure(const Destination &dst, const std::string &terminal_reason)
 {
+    std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
     RuntimeStatus &status = g_runtime_statuses[destination_id(dst)];
     status.state = RuntimeState::Failed;
     status.terminal_reason = terminal_reason;
@@ -139,6 +149,7 @@ void set_runtime_terminal_failure(const Destination &dst, const std::string &ter
 
 std::string last_runtime_error_for_destination(const Destination &dst)
 {
+    std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
     const auto it = g_runtime_statuses.find(destination_id(dst));
     if (it == g_runtime_statuses.end()) {
         return "";
@@ -268,11 +279,17 @@ void refresh_destinations_table()
     }
 
     g_is_refreshing_table = true;
+    std::unordered_map<std::string, RuntimeStatus> status_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+        status_snapshot = g_runtime_statuses;
+    }
+
     g_destinations_table->setRowCount(static_cast<int>(g_destinations.size()));
     for (int row = 0; row < static_cast<int>(g_destinations.size()); ++row) {
         const Destination &dst = g_destinations[static_cast<size_t>(row)];
-        const auto it = g_runtime_statuses.find(destination_id(dst));
-        const RuntimeStatus runtime = it == g_runtime_statuses.end() ? RuntimeStatus{} : it->second;
+        const auto it = status_snapshot.find(destination_id(dst));
+        const RuntimeStatus runtime = it == status_snapshot.end() ? RuntimeStatus{} : it->second;
 
         const QString platform_label = dst.is_default
             ? QString::fromStdString(dst.platform) + QStringLiteral(" \xF0\x9F\x94\x92 (OBS default)")
@@ -938,7 +955,10 @@ void sync_default_destination_from_obs()
     if (!has_valid) {
         // No usable default configured in OBS Settings -> Stream: remove any stale locked row.
         if (it != g_destinations.end()) {
-            g_runtime_statuses.erase(destination_id(*it));
+            {
+                std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+                g_runtime_statuses.erase(destination_id(*it));
+            }
             g_destinations.erase(it);
             refresh_destinations_table();
         }
@@ -946,15 +966,21 @@ void sync_default_destination_from_obs()
     }
 
     if (it == g_destinations.end()) {
-        g_runtime_statuses[destination_id(default_dst)] = RuntimeStatus{};
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            g_runtime_statuses[destination_id(default_dst)] = RuntimeStatus{};
+        }
         g_destinations.insert(g_destinations.begin(), std::move(default_dst));
     } else {
         const std::string old_id = destination_id(*it);
         const std::string new_id = destination_id(default_dst);
         if (old_id != new_id) {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
             auto status_it = g_runtime_statuses.find(old_id);
             RuntimeStatus status = status_it != g_runtime_statuses.end() ? status_it->second : RuntimeStatus{};
-            if (status_it != g_runtime_statuses.end()) g_runtime_statuses.erase(status_it);
+            if (status_it != g_runtime_statuses.end()) {
+                g_runtime_statuses.erase(status_it);
+            }
             g_runtime_statuses[new_id] = status;
         }
         *it = std::move(default_dst);
@@ -970,7 +996,10 @@ void sync_default_destination_from_obs()
 void load_destinations()
 {
     g_destinations.clear();
-    g_runtime_statuses.clear();
+    {
+        std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+        g_runtime_statuses.clear();
+    }
 
     obs_data_t *config = obs_data_create_from_json_file_safe("obs-multistream-plugin.json", "bak");
     if (!config) {
@@ -985,7 +1014,17 @@ void load_destinations()
         Destination dst;
         dst.platform = obs_data_get_string(item, "platform");
         dst.server = obs_data_get_string(item, "server");
-        dst.stream_key = obs_data_get_string(item, "stream_key");
+        const std::string key_raw = obs_data_get_string(item, "stream_key");
+        const std::string key_enc = obs_data_get_string(item, "stream_key_encoding");
+        if (key_enc.empty()) {
+            dst.stream_key = key_raw;
+        } else if (!stream_key_unprotect_load(key_raw, key_enc, &dst.stream_key)) {
+            blog(LOG_WARNING,
+                 "[obs-multistream-plugin] Could not decrypt stream key for platform=%s; skipping entry",
+                 dst.platform.c_str());
+            obs_data_release(item);
+            continue;
+        }
         const char *protocol = obs_data_get_string(item, "protocol");
         if (protocol && protocol[0] != '\0') {
             dst.protocol = protocol;
@@ -1014,7 +1053,10 @@ void load_destinations()
             continue;
         }
 
-        g_runtime_statuses[destination_id(dst)] = RuntimeStatus{};
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            g_runtime_statuses[destination_id(dst)] = RuntimeStatus{};
+        }
         g_destinations.push_back(std::move(dst));
         obs_data_release(item);
     }
@@ -1037,7 +1079,18 @@ void save_destinations()
         obs_data_t *item = obs_data_create();
         obs_data_set_string(item, "platform", dst.platform.c_str());
         obs_data_set_string(item, "server", dst.server.c_str());
-        obs_data_set_string(item, "stream_key", dst.stream_key.c_str());
+        std::string key_blob;
+        std::string key_enc;
+        if (stream_key_protect_for_save(dst.stream_key, &key_blob, &key_enc)) {
+            obs_data_set_string(item, "stream_key", key_blob.c_str());
+            obs_data_set_string(item, "stream_key_encoding", key_enc.c_str());
+        } else {
+            obs_data_set_string(item, "stream_key", dst.stream_key.c_str());
+            obs_data_set_string(item, "stream_key_encoding", "");
+            blog(LOG_WARNING,
+                 "[obs-multistream-plugin] Stream key not encrypted for platform=%s (OS/build lacks protection)",
+                 dst.platform.c_str());
+        }
         obs_data_set_string(item, "protocol", dst.protocol.c_str());
         obs_data_set_bool(item, "requires_vertical", dst.requires_vertical);
         obs_data_set_bool(item, "enabled", dst.enabled);
@@ -1067,7 +1120,7 @@ void create_dock()
 
     auto *header_layout = new QHBoxLayout();
     header_layout->addStretch(1);
-    auto *version_label = new QLabel(QString::fromUtf8(kPluginUiVersion), container);
+    auto *version_label = new QLabel(QString::fromUtf8(PLUGIN_UI_VERSION_STRING), container);
     version_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     header_layout->addWidget(version_label);
     layout->addLayout(header_layout);
@@ -1122,7 +1175,10 @@ void create_dock()
         }
 
         g_destinations.push_back(std::move(dst));
-        g_runtime_statuses[destination_id(g_destinations.back())] = RuntimeStatus{};
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            g_runtime_statuses[destination_id(g_destinations.back())] = RuntimeStatus{};
+        }
         save_destinations();
         refresh_destinations_table();
 
@@ -1162,10 +1218,13 @@ void create_dock()
         const std::string new_id = destination_id(updated);
 
         RuntimeStatus status;
-        const auto status_it = g_runtime_statuses.find(old_id);
-        if (status_it != g_runtime_statuses.end()) {
-            status = status_it->second;
-            g_runtime_statuses.erase(status_it);
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            const auto status_it = g_runtime_statuses.find(old_id);
+            if (status_it != g_runtime_statuses.end()) {
+                status = status_it->second;
+                g_runtime_statuses.erase(status_it);
+            }
         }
 
         existing.platform = updated.platform;
@@ -1174,7 +1233,10 @@ void create_dock()
         existing.protocol = updated.protocol;
         existing.requires_vertical = updated.requires_vertical;
 
-        g_runtime_statuses[new_id] = status;
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            g_runtime_statuses[new_id] = status;
+        }
         save_destinations();
         refresh_destinations_table();
         update_server_for_platform();
@@ -1244,7 +1306,10 @@ void create_dock()
         }
 
         const std::string platform = g_destinations[static_cast<size_t>(row)].platform;
-        g_runtime_statuses.erase(destination_id(g_destinations[static_cast<size_t>(row)]));
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            g_runtime_statuses.erase(destination_id(g_destinations[static_cast<size_t>(row)]));
+        }
         g_destinations.erase(g_destinations.begin() + row);
         save_destinations();
         refresh_destinations_table();
@@ -1316,6 +1381,13 @@ MODULE_EXPORT const char *obs_module_description(void)
 
 bool obs_module_load(void)
 {
+#if defined(STREAM_KEY_USE_OPENSSL)
+    char *master_path = obs_module_config_path("stream_key_master.bin");
+    if (master_path) {
+        stream_key_set_master_key_file_path(master_path);
+        bfree(master_path);
+    }
+#endif
     load_destinations();
     create_dock();
     g_multistream_manager = std::make_unique<MultistreamManager>();
