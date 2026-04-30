@@ -8,6 +8,7 @@
 #include <QDockWidget>
 #include <QComboBox>
 #include <QColor>
+#include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -27,12 +28,15 @@
 #include <vector>
 
 namespace {
-constexpr const char *kPluginUiVersion = "v1.0.0b";
+constexpr const char *kPluginUiVersion = "v1.0.0";
 
 std::vector<Destination> g_destinations;
 QDockWidget *g_dock = nullptr;
 QTableWidget *g_destinations_table = nullptr;
 bool g_is_refreshing_table = false;
+
+// Forward declaration: keep the locked default destination row in sync with OBS Settings -> Stream.
+void sync_default_destination_from_obs();
 
 enum class RuntimeState {
     Idle,
@@ -76,6 +80,7 @@ const char *runtime_state_name(RuntimeState state)
 }
 
 void refresh_destinations_table();
+void save_destinations();
 
 class MultistreamManager;
 std::unique_ptr<MultistreamManager> g_multistream_manager;
@@ -219,35 +224,17 @@ bool validate_destination(const Destination &dst, int skip_duplicate_index = -1)
     const DestinationValidationResult result =
         validate_destination(g_destinations, dst, skip_duplicate_index);
     if (result.ok) {
-        obs_service_t *primary_service = obs_frontend_get_streaming_service();
-        if (primary_service) {
-            obs_data_t *primary_settings = obs_service_get_settings(primary_service);
-
-            Destination primary_dst;
-            if (primary_settings) {
-                primary_dst.platform = "OBS Primary";
-                primary_dst.server = obs_data_get_string(primary_settings, "server");
-
-                const char *primary_key = obs_data_get_string(primary_settings, "key");
-                if (!primary_key || primary_key[0] == '\0') {
-                    primary_key = obs_data_get_string(primary_settings, "stream_key");
-                }
-                primary_dst.stream_key = primary_key ? primary_key : "";
-
-                normalize_destination(primary_dst);
-                obs_data_release(primary_settings);
-            }
-
-            obs_service_release(primary_service);
-
-            if (!primary_dst.server.empty() && !primary_dst.stream_key.empty() &&
-                primary_dst.server == dst.server && primary_dst.stream_key == dst.stream_key) {
+        // Reject only when the user is trying to manually re-add the OBS primary destination as a NEW row.
+        // The locked is_default row that we manage ourselves is allowed and skipped at validation time.
+        for (int i = 0; i < static_cast<int>(g_destinations.size()); ++i) {
+            if (i == skip_duplicate_index) continue;
+            const Destination &existing = g_destinations[static_cast<size_t>(i)];
+            if (existing.is_default && existing.server == dst.server && existing.stream_key == dst.stream_key) {
                 blog(LOG_WARNING,
                      "[obs-multistream-plugin] Destination matches OBS primary streaming destination and was rejected");
                 return false;
             }
         }
-
         return true;
     }
 
@@ -287,16 +274,38 @@ void refresh_destinations_table()
         const auto it = g_runtime_statuses.find(destination_id(dst));
         const RuntimeStatus runtime = it == g_runtime_statuses.end() ? RuntimeStatus{} : it->second;
 
+        const QString platform_label = dst.is_default
+            ? QString::fromStdString(dst.platform) + QStringLiteral(" \xF0\x9F\x94\x92 (OBS default)")
+            : QString::fromStdString(dst.platform);
+
         auto *enabled_item = new QTableWidgetItem();
-        auto *platform_item = new QTableWidgetItem(QString::fromStdString(dst.platform));
+        auto *platform_item = new QTableWidgetItem(platform_label);
         auto *server_item = new QTableWidgetItem(QString::fromStdString(dst.server));
         auto *protocol_item = new QTableWidgetItem(QString::fromStdString(dst.protocol));
         auto *vertical_item = new QTableWidgetItem(dst.requires_vertical ? "Yes" : "No");
         auto *status_item = new QTableWidgetItem(QString::fromStdString(status_text_for_table(runtime, dst.enabled)));
         auto *error_item = new QTableWidgetItem(QString::fromStdString(error_text_for_table(runtime)));
 
-        enabled_item->setFlags((enabled_item->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
-        enabled_item->setCheckState(dst.enabled ? Qt::Checked : Qt::Unchecked);
+        // The default (OBS-managed) row is checked, locked and not user-toggleable.
+        Qt::ItemFlags enabled_flags = (enabled_item->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable;
+        if (dst.is_default) {
+            enabled_flags &= ~Qt::ItemIsUserCheckable;
+            enabled_flags &= ~Qt::ItemIsEnabled;
+        }
+        enabled_item->setFlags(enabled_flags);
+        enabled_item->setCheckState((dst.enabled || dst.is_default) ? Qt::Checked : Qt::Unchecked);
+
+        if (dst.is_default) {
+            QFont locked_font = platform_item->font();
+            locked_font.setItalic(true);
+            platform_item->setFont(locked_font);
+            server_item->setFont(locked_font);
+            const QString tooltip = QStringLiteral(
+                "Configured in OBS Settings -> Stream. Edit it there.");
+            platform_item->setToolTip(tooltip);
+            server_item->setToolTip(tooltip);
+            enabled_item->setToolTip(tooltip);
+        }
         platform_item->setFlags(platform_item->flags() & ~Qt::ItemIsEditable);
         server_item->setFlags(server_item->flags() & ~Qt::ItemIsEditable);
         protocol_item->setFlags(protocol_item->flags() & ~Qt::ItemIsEditable);
@@ -326,28 +335,20 @@ public:
         stop_all();
         stopping_ = false;
 
-        obs_output_t *main_output = obs_frontend_get_streaming_output();
-        if (!main_output) {
-            blog(LOG_WARNING, "[obs-multistream-plugin] Main streaming output is not available");
-            return;
-        }
-
-        obs_encoder_t *video_encoder = obs_output_get_video_encoder(main_output);
-        obs_encoder_t *audio_encoder = obs_output_get_audio_encoder(main_output, 0);
-        if (!video_encoder || !audio_encoder) {
-            blog(LOG_WARNING, "[obs-multistream-plugin] Main stream encoders are not available");
-            obs_output_release(main_output);
-            return;
-        }
-
         bool started_any = false;
         for (const Destination &dst : destinations) {
             if (!dst.enabled) {
                 continue;
             }
+            // The locked OBS-default row is streamed by OBS itself; we only mirror its status.
+            if (dst.is_default) {
+                continue;
+            }
 
             set_runtime_status(dst, RuntimeState::Starting);
-            const bool started = start_single_destination(dst, video_encoder, audio_encoder);
+            // Each destination owns its own encoders bound to OBS's global video/audio.
+            // Reusing the main streaming output's encoders is unsupported and crashes OBS.
+            const bool started = start_single_destination(dst, nullptr, nullptr);
             if (!started) {
                 const std::string reason = last_runtime_error_for_destination(dst).empty()
                     ? "Failed to start output"
@@ -358,10 +359,8 @@ public:
         }
 
         if (!started_any) {
-            blog(LOG_WARNING, "[obs-multistream-plugin] No secondary destination started");
+            blog(LOG_INFO, "[obs-multistream-plugin] No secondary multistream destination started");
         }
-
-        obs_output_release(main_output);
     }
 
     void stop_all()
@@ -381,15 +380,6 @@ public:
 
             set_runtime_status(runtime->destination, RuntimeState::Stopped);
         }
-
-        runtimes_.erase(
-            std::remove_if(
-                runtimes_.begin(),
-                runtimes_.end(),
-                [](const std::unique_ptr<DestinationRuntime> &runtime) {
-                    return !runtime || !runtime->output;
-                }),
-            runtimes_.end());
     }
 
     void handle_runtime_deactivated(const Destination &dst)
@@ -409,28 +399,13 @@ public:
         }
 
         const Destination *candidate = find_enabled_destination_by_id(id);
-        if (!candidate) {
-            return;
-        }
-
-        obs_output_t *main_output = obs_frontend_get_streaming_output();
-        if (!main_output) {
-            schedule_retry(*candidate, "Main output unavailable during retry");
-            return;
-        }
-
-        obs_encoder_t *video_encoder = obs_output_get_video_encoder(main_output);
-        obs_encoder_t *audio_encoder = obs_output_get_audio_encoder(main_output, 0);
-        if (!video_encoder || !audio_encoder) {
-            obs_output_release(main_output);
-            schedule_retry(*candidate, "Main encoders unavailable during retry");
+        if (!candidate || candidate->is_default) {
             return;
         }
 
         cleanup_runtime_for_destination(id);
         set_runtime_status(*candidate, RuntimeState::Starting);
-        const bool started = start_single_destination(*candidate, video_encoder, audio_encoder);
-        obs_output_release(main_output);
+        const bool started = start_single_destination(*candidate, nullptr, nullptr);
 
         if (!started) {
             const std::string reason = last_runtime_error_for_destination(*candidate).empty()
@@ -446,6 +421,7 @@ private:
         obs_service_t *service = nullptr;
         obs_output_t *output = nullptr;
         obs_encoder_t *video_encoder = nullptr;
+        obs_encoder_t *audio_encoder = nullptr;
     };
 
     struct RetryInfo {
@@ -572,30 +548,29 @@ private:
 
     void cleanup_runtime_for_destination(const std::string &id)
     {
-        for (auto it = runtimes_.begin(); it != runtimes_.end(); ++it) {
-            DestinationRuntime *runtime = it->get();
+        for (const std::unique_ptr<DestinationRuntime> &runtime_ptr : runtimes_) {
+            DestinationRuntime *runtime = runtime_ptr.get();
             if (destination_id(runtime->destination) != id) {
                 continue;
             }
 
             release_runtime_resources(runtime);
-
-            runtimes_.erase(it);
             return;
         }
     }
 
-    static void release_runtime_resources(DestinationRuntime *runtime)
+    static bool release_runtime_resources(DestinationRuntime *runtime)
     {
         if (!runtime) {
-            return;
+            return true;
         }
 
         if (runtime->output) {
-            disconnect_output_callbacks(runtime);
             if (obs_output_active(runtime->output)) {
                 obs_output_stop(runtime->output);
+                return false;
             }
+            disconnect_output_callbacks(runtime);
             obs_output_release(runtime->output);
             runtime->output = nullptr;
         }
@@ -609,6 +584,23 @@ private:
             obs_encoder_release(runtime->video_encoder);
             runtime->video_encoder = nullptr;
         }
+
+        if (runtime->audio_encoder) {
+            obs_encoder_release(runtime->audio_encoder);
+            runtime->audio_encoder = nullptr;
+        }
+
+        return true;
+    }
+
+    void erase_runtime_by_id(const std::string &id)
+    {
+        runtimes_.erase(
+            std::remove_if(runtimes_.begin(), runtimes_.end(),
+                           [&id](const std::unique_ptr<DestinationRuntime> &r) {
+                               return r && destination_id(r->destination) == id;
+                           }),
+            runtimes_.end());
     }
 
     void schedule_retry(const Destination &dst, const std::string &reason)
@@ -699,48 +691,114 @@ private:
         return prefix + "_" + platform + "_" + std::to_string(id_hash);
     }
 
-    static obs_encoder_t *create_vertical_video_encoder(const Destination &dst, obs_encoder_t *shared_video_encoder)
+    // Build a fresh, owned video encoder for this destination, bound to OBS's global video.
+    // Sharing the main streaming output's encoder with another active output is unsupported by OBS
+    // and was the root cause of crashes when starting from the native Start Streaming button.
+    static obs_encoder_t *create_owned_video_encoder(const Destination &dst, bool vertical)
     {
-        if (!shared_video_encoder) {
-            return nullptr;
-        }
-
-        const char *video_encoder_id = obs_encoder_get_id(shared_video_encoder);
-        if (!video_encoder_id || video_encoder_id[0] == '\0') {
-            video_encoder_id = "obs_x264";
-        }
+        const char *video_encoder_id = "obs_x264";
+        const std::string encoder_name = make_safe_name(
+            vertical ? "multistream_vertical_video_encoder" : "multistream_video_encoder", dst);
 
         obs_data_t *video_settings = obs_data_create();
-        const std::string encoder_name = make_safe_name("multistream_vertical_video_encoder", dst);
-        obs_encoder_t *vertical_encoder =
+        obs_encoder_t *encoder =
             obs_video_encoder_create(video_encoder_id, encoder_name.c_str(), video_settings, nullptr);
         obs_data_release(video_settings);
 
-        if (!vertical_encoder) {
+        if (!encoder) {
             return nullptr;
         }
 
-        obs_encoder_set_video(vertical_encoder, obs_get_video());
-        obs_encoder_set_scaled_size(vertical_encoder, kVerticalWidth, kVerticalHeight);
-        return vertical_encoder;
+        obs_encoder_set_video(encoder, obs_get_video());
+        if (vertical) {
+            obs_encoder_set_scaled_size(encoder, kVerticalWidth, kVerticalHeight);
+        }
+        return encoder;
     }
 
-    bool start_runtime(
-        const Destination &dst,
-        obs_service_t *service,
-        obs_output_t *output,
-        obs_encoder_t *video_encoder,
-        obs_encoder_t *audio_encoder,
-        obs_encoder_t *owned_video_encoder,
-        const char *pipeline_name)
+    static obs_encoder_t *create_owned_audio_encoder(const Destination &dst)
     {
-        auto runtime = std::make_unique<DestinationRuntime>();
+        const std::string encoder_name = make_safe_name("multistream_audio_encoder", dst);
+        obs_data_t *audio_settings = obs_data_create();
+        obs_encoder_t *encoder =
+            obs_audio_encoder_create("ffmpeg_aac", encoder_name.c_str(), audio_settings, 0, nullptr);
+        obs_data_release(audio_settings);
+
+        if (!encoder) {
+            return nullptr;
+        }
+        obs_encoder_set_audio(encoder, obs_get_audio());
+        return encoder;
+    }
+
+    // Create the service + output + per-destination encoders, then start the output.
+    // On any failure, releases everything it allocated and removes the runtime entry.
+    bool start_single_destination(const Destination &dst, obs_encoder_t * /*unused_video*/, obs_encoder_t * /*unused_audio*/)
+    {
+        const bool vertical = dst.requires_vertical;
+        const char *pipeline_name = vertical ? "vertical" : "shared";
+        const std::string id = destination_id(dst);
+
+        // Service.
+        obs_data_t *service_settings = obs_data_create();
+        obs_data_set_string(service_settings, "server", dst.server.c_str());
+        obs_data_set_string(service_settings, "key", dst.stream_key.c_str());
+        const std::string service_name = make_safe_name(
+            vertical ? "multistream_vertical_service" : "multistream_service", dst);
+        obs_service_t *service =
+            obs_service_create("rtmp_custom", service_name.c_str(), service_settings, nullptr);
+        obs_data_release(service_settings);
+        if (!service) {
+            blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create service for platform=%s",
+                 dst.platform.c_str());
+            return false;
+        }
+
+        // Output.
+        const std::string output_name = make_safe_name(
+            vertical ? "multistream_vertical_output" : "multistream_output", dst);
+        obs_output_t *output = obs_output_create("rtmp_output", output_name.c_str(), nullptr, nullptr);
+        if (!output) {
+            blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create output for platform=%s",
+                 dst.platform.c_str());
+            obs_service_release(service);
+            return false;
+        }
+
+        // Per-destination encoders bound to OBS's global a/v.
+        obs_encoder_t *video_encoder = create_owned_video_encoder(dst, vertical);
+        obs_encoder_t *audio_encoder = create_owned_audio_encoder(dst);
+        if (!video_encoder || !audio_encoder) {
+            blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create encoders for platform=%s",
+                 dst.platform.c_str());
+            if (video_encoder) obs_encoder_release(video_encoder);
+            if (audio_encoder) obs_encoder_release(audio_encoder);
+            obs_output_release(output);
+            obs_service_release(service);
+            return false;
+        }
+
+        // Find or create the runtime.
+        DestinationRuntime *runtime = nullptr;
+        for (const std::unique_ptr<DestinationRuntime> &existing : runtimes_) {
+            if (existing && destination_id(existing->destination) == id) {
+                runtime = existing.get();
+                break;
+            }
+        }
+        if (!runtime) {
+            auto new_runtime = std::make_unique<DestinationRuntime>();
+            new_runtime->destination = dst;
+            runtime = new_runtime.get();
+            runtimes_.push_back(std::move(new_runtime));
+        }
         runtime->destination = dst;
         runtime->service = service;
         runtime->output = output;
-        runtime->video_encoder = owned_video_encoder;
+        runtime->video_encoder = video_encoder;
+        runtime->audio_encoder = audio_encoder;
 
-        connect_output_callbacks(runtime.get());
+        connect_output_callbacks(runtime);
 
         obs_output_set_service(output, service);
         obs_output_set_video_encoder(output, video_encoder);
@@ -752,125 +810,161 @@ private:
                 ? std::string(last_error)
                 : "Failed to start output";
             blog(LOG_ERROR,
-                "[obs-multistream-plugin] Failed to start %s output for platform=%s: %s",
-                pipeline_name,
-                dst.platform.c_str(),
-                reason.c_str());
+                 "[obs-multistream-plugin] Failed to start %s output for platform=%s: %s",
+                 pipeline_name, dst.platform.c_str(), reason.c_str());
             set_runtime_status(dst, RuntimeState::Failed, reason);
-            disconnect_output_callbacks(runtime.get());
-            if (owned_video_encoder) {
-                obs_encoder_release(owned_video_encoder);
-            }
+            disconnect_output_callbacks(runtime);
+            obs_encoder_release(video_encoder);
+            obs_encoder_release(audio_encoder);
             obs_output_release(output);
             obs_service_release(service);
+            runtime->video_encoder = nullptr;
+            runtime->audio_encoder = nullptr;
+            runtime->output = nullptr;
+            runtime->service = nullptr;
+            // Drop the empty runtime so stop_all/cleanup don't iterate over a husk.
+            erase_runtime_by_id(id);
             return false;
         }
 
-        runtimes_.push_back(std::move(runtime));
-        retry_infos_[destination_id(dst)].attempts = 0;
+        retry_infos_[id].attempts = 0;
 
         const PlatformKind platform_kind = detect_platform_kind(dst.platform);
         blog(LOG_INFO,
-            "[obs-multistream-plugin] Started %s secondary stream for platform=%s (kind=%s, protocol=%s)",
-            pipeline_name,
-            dst.platform.c_str(),
-            platform_kind_name(platform_kind),
-            dst.protocol.c_str());
+             "[obs-multistream-plugin] Started %s secondary stream for platform=%s (kind=%s, protocol=%s)",
+             pipeline_name, dst.platform.c_str(),
+             platform_kind_name(platform_kind), dst.protocol.c_str());
         return true;
-    }
-
-    bool start_shared_destination(const Destination &dst, obs_encoder_t *video_encoder, obs_encoder_t *audio_encoder)
-    {
-        obs_data_t *service_settings = obs_data_create();
-        obs_data_set_string(service_settings, "server", dst.server.c_str());
-        obs_data_set_string(service_settings, "key", dst.stream_key.c_str());
-
-        const std::string service_name = make_safe_name("multistream_service", dst);
-        obs_service_t *service = obs_service_create("rtmp_custom", service_name.c_str(), service_settings, nullptr);
-        obs_data_release(service_settings);
-
-        if (!service) {
-            blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create service for platform=%s", dst.platform.c_str());
-            return false;
-        }
-
-        const std::string output_name = make_safe_name("multistream_output", dst);
-        obs_output_t *output = obs_output_create("rtmp_output", output_name.c_str(), nullptr, nullptr);
-        if (!output) {
-            blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create output for platform=%s", dst.platform.c_str());
-            obs_service_release(service);
-            return false;
-        }
-
-        return start_runtime(dst, service, output, video_encoder, audio_encoder, nullptr, "shared");
-    }
-
-    bool start_vertical_destination(const Destination &dst, obs_encoder_t *shared_video_encoder, obs_encoder_t *audio_encoder)
-    {
-        obs_data_t *service_settings = obs_data_create();
-        obs_data_set_string(service_settings, "server", dst.server.c_str());
-        obs_data_set_string(service_settings, "key", dst.stream_key.c_str());
-
-        const std::string service_name = make_safe_name("multistream_vertical_service", dst);
-        obs_service_t *service = obs_service_create("rtmp_custom", service_name.c_str(), service_settings, nullptr);
-        obs_data_release(service_settings);
-
-        if (!service) {
-            blog(LOG_ERROR,
-                "[obs-multistream-plugin] Failed to create vertical service for platform=%s",
-                dst.platform.c_str());
-            return false;
-        }
-
-        const std::string output_name = make_safe_name("multistream_vertical_output", dst);
-        obs_output_t *output = obs_output_create("rtmp_output", output_name.c_str(), nullptr, nullptr);
-        if (!output) {
-            blog(LOG_ERROR,
-                "[obs-multistream-plugin] Failed to create vertical output for platform=%s",
-                dst.platform.c_str());
-            obs_service_release(service);
-            return false;
-        }
-
-        obs_encoder_t *vertical_video_encoder = create_vertical_video_encoder(dst, shared_video_encoder);
-        if (!vertical_video_encoder) {
-            blog(LOG_ERROR,
-                "[obs-multistream-plugin] Failed to create vertical video encoder for platform=%s",
-                dst.platform.c_str());
-            obs_output_release(output);
-            obs_service_release(service);
-            return false;
-        }
-
-        return start_runtime(dst, service, output, vertical_video_encoder, audio_encoder, vertical_video_encoder, "vertical");
-    }
-
-    bool start_single_destination(const Destination &dst, obs_encoder_t *video_encoder, obs_encoder_t *audio_encoder)
-    {
-        if (dst.requires_vertical) {
-            return start_vertical_destination(dst, video_encoder, audio_encoder);
-        }
-        return start_shared_destination(dst, video_encoder, audio_encoder);
     }
 };
 
 void on_frontend_event(enum obs_frontend_event event, void *)
 {
+    switch (event) {
+    case OBS_FRONTEND_EVENT_FINISHED_LOADING:
+    case OBS_FRONTEND_EVENT_PROFILE_CHANGED:
+    case OBS_FRONTEND_EVENT_PROFILE_RENAMED:
+        // OBS Settings -> Stream may have changed; refresh the locked default row.
+        sync_default_destination_from_obs();
+        return;
+    default:
+        break;
+    }
+
     if (!g_multistream_manager) {
         return;
     }
 
     switch (event) {
-    case OBS_FRONTEND_EVENT_STREAMING_STARTED:
-        g_multistream_manager->start_for_all_enabled(g_destinations);
+    case OBS_FRONTEND_EVENT_STREAMING_STARTING:
+        // Refresh in case the user just changed the default service before clicking Start.
+        sync_default_destination_from_obs();
         break;
+    case OBS_FRONTEND_EVENT_STREAMING_STARTED: {
+        // Mark the default row as Live (OBS itself owns that stream).
+        for (const Destination &dst : g_destinations) {
+            if (dst.is_default) {
+                set_runtime_status(dst, RuntimeState::Live);
+            }
+        }
+        // Defer secondary outputs by one event-loop tick so OBS finishes wiring up
+        // its main encoder pipeline before we attach our own outputs.
+        if (g_dock) {
+            QTimer::singleShot(0, g_dock, []() {
+                if (g_multistream_manager) {
+                    g_multistream_manager->start_for_all_enabled(g_destinations);
+                }
+            });
+        } else if (g_multistream_manager) {
+            g_multistream_manager->start_for_all_enabled(g_destinations);
+        }
+        break;
+    }
+    case OBS_FRONTEND_EVENT_STREAMING_STOPPING:
     case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
     case OBS_FRONTEND_EVENT_EXIT:
+        for (const Destination &dst : g_destinations) {
+            if (dst.is_default) {
+                set_runtime_status(dst, RuntimeState::Stopped);
+            }
+        }
         g_multistream_manager->stop_all();
         break;
     default:
         break;
     }
+}
+
+void sync_default_destination_from_obs()
+{
+    Destination default_dst;
+    default_dst.is_default = true;
+    default_dst.enabled = true;
+    default_dst.platform = "OBS default";
+
+    obs_service_t *primary_service = obs_frontend_get_streaming_service();
+    if (primary_service) {
+        obs_data_t *primary_settings = obs_service_get_settings(primary_service);
+        if (primary_settings) {
+            const char *server = obs_data_get_string(primary_settings, "server");
+            default_dst.server = server ? server : "";
+
+            const char *key = obs_data_get_string(primary_settings, "key");
+            if (!key || key[0] == '\0') {
+                key = obs_data_get_string(primary_settings, "stream_key");
+            }
+            default_dst.stream_key = key ? key : "";
+
+            const char *service_name = obs_service_get_type(primary_service);
+            if (service_name && std::string(service_name).find("rtmp_common") != std::string::npos) {
+                const char *named = obs_data_get_string(primary_settings, "service");
+                if (named && named[0] != '\0') {
+                    default_dst.platform = named;
+                }
+            }
+            obs_data_release(primary_settings);
+        }
+        // NOTE: obs_frontend_get_streaming_service() returns a borrowed reference, do NOT release.
+    }
+
+    normalize_destination(default_dst);
+
+    // Locate any existing default row.
+    auto it = std::find_if(g_destinations.begin(), g_destinations.end(),
+                           [](const Destination &d) { return d.is_default; });
+
+    const bool has_valid = !default_dst.server.empty() && !default_dst.stream_key.empty();
+
+    if (!has_valid) {
+        // No usable default configured in OBS Settings -> Stream: remove any stale locked row.
+        if (it != g_destinations.end()) {
+            g_runtime_statuses.erase(destination_id(*it));
+            g_destinations.erase(it);
+            refresh_destinations_table();
+        }
+        return;
+    }
+
+    if (it == g_destinations.end()) {
+        g_runtime_statuses[destination_id(default_dst)] = RuntimeStatus{};
+        g_destinations.insert(g_destinations.begin(), std::move(default_dst));
+    } else {
+        const std::string old_id = destination_id(*it);
+        const std::string new_id = destination_id(default_dst);
+        if (old_id != new_id) {
+            auto status_it = g_runtime_statuses.find(old_id);
+            RuntimeStatus status = status_it != g_runtime_statuses.end() ? status_it->second : RuntimeStatus{};
+            if (status_it != g_runtime_statuses.end()) g_runtime_statuses.erase(status_it);
+            g_runtime_statuses[new_id] = status;
+        }
+        *it = std::move(default_dst);
+        // Ensure default sits at row 0.
+        if (it != g_destinations.begin()) {
+            std::rotate(g_destinations.begin(), it, it + 1);
+        }
+    }
+
+    refresh_destinations_table();
 }
 
 void load_destinations()
@@ -902,6 +996,12 @@ void load_destinations()
 
         normalize_destination(dst);
 
+        // is_default rows are managed at runtime from OBS Settings; never load them from JSON.
+        if (obs_data_get_bool(item, "is_default")) {
+            obs_data_release(item);
+            continue;
+        }
+
         if (dst.platform.empty() || dst.server.empty() || dst.stream_key.empty()) {
             blog(LOG_WARNING, "[obs-multistream-plugin] Skipping incomplete destination at index=%zu", i);
             obs_data_release(item);
@@ -930,6 +1030,10 @@ void save_destinations()
     obs_data_array_t *items = obs_data_array_create();
 
     for (const Destination &dst : g_destinations) {
+        if (dst.is_default) {
+            // Don't persist the OBS-managed locked entry; it's reconstructed from OBS Settings.
+            continue;
+        }
         obs_data_t *item = obs_data_create();
         obs_data_set_string(item, "platform", dst.platform.c_str());
         obs_data_set_string(item, "server", dst.server.c_str());
@@ -1038,6 +1142,11 @@ void create_dock()
             return;
         }
 
+        if (g_destinations[static_cast<size_t>(row)].is_default) {
+            blog(LOG_WARNING, "[obs-multistream-plugin] The OBS default destination is read-only here; edit it in OBS Settings -> Stream");
+            return;
+        }
+
         Destination updated = g_destinations[static_cast<size_t>(row)];
         updated.platform = platform->currentText().toStdString();
         updated.server = server->text().toStdString();
@@ -1102,6 +1211,10 @@ void create_dock()
         }
 
         Destination &dst = g_destinations[static_cast<size_t>(row)];
+        if (dst.is_default) {
+            // Locked: re-assert checked state and ignore.
+            return;
+        }
         const bool enabled = item->checkState() == Qt::Checked;
         if (dst.enabled == enabled) {
             return;
@@ -1125,6 +1238,11 @@ void create_dock()
             return;
         }
 
+        if (g_destinations[static_cast<size_t>(row)].is_default) {
+            blog(LOG_WARNING, "[obs-multistream-plugin] Cannot remove the OBS default destination; change it in OBS Settings -> Stream");
+            return;
+        }
+
         const std::string platform = g_destinations[static_cast<size_t>(row)].platform;
         g_runtime_statuses.erase(destination_id(g_destinations[static_cast<size_t>(row)]));
         g_destinations.erase(g_destinations.begin() + row);
@@ -1143,7 +1261,18 @@ void create_dock()
     layout->addLayout(manage_layout);
     layout->addStretch();
 
+    sync_default_destination_from_obs();
     refresh_destinations_table();
+
+    // The OBS frontend may not have its primary streaming service ready yet at module
+    // load time, so retry the sync a few times shortly after the dock is created. This
+    // makes the locked default row appear immediately on startup, not only when the user
+    // clicks "Start Streaming".
+    for (int delay_ms : {0, 250, 750, 2000, 5000}) {
+        QTimer::singleShot(delay_ms, container, []() {
+            sync_default_destination_from_obs();
+        });
+    }
 
     g_dock = new QDockWidget("Multistream Destinations", main_window);
     g_dock->setObjectName("obs_multistream_destinations_dock");

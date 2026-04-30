@@ -1,0 +1,16 @@
+# Build outputs
+/build/
+/cmake-build-*/
+/out/
+
+# IDE
+/.idea/
+/.vs/
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Distribution staging (keep folder structure but ignore generated zip)
+/dist/*.zip

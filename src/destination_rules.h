@@ -10,6 +10,8 @@ struct Destination {
     std::string protocol = "rtmp";
     bool requires_vertical = false;
     bool enabled = true;
+    bool is_default = false;     // Mirror of OBS's primary streaming service (Settings -> Stream).
+                                 // Locked entry: not editable / removable, not persisted, not started by us.
     std::string notes;
 };
 

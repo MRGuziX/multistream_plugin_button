@@ -1,0 +1,56 @@
+obs-multistream-plugin
+======================
+
+Copyright (c) 2025 Tomasz Guzik <tomasz.guzik@onet.eu> and the
+obs-multistream-plugin contributors (see CONTRIBUTORS.md).
+
+All rights reserved.
+
+
+License
+-------
+
+This project is licensed under the GNU General Public License, version 2
+or (at your option) any later version (GPL-2.0-or-later), to remain
+compatible with OBS Studio (which is itself licensed under GPL-2.0-or-later)
+since this plugin links against the OBS Studio libraries (libobs,
+obs-frontend-api).
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, see <https://www.gnu.org/licenses/gpl-2.0.html>.
+
+The full text of the GPL-2.0 license is available at:
+    https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+
+Third-party components
+----------------------
+
+This repository vendors headers and import libraries for OBS Studio under
+`third_party/`. OBS Studio is Copyright (c) the OBS Project authors and is
+licensed under GPL-2.0-or-later. See:
+    https://github.com/obsproject/obs-studio
+    https://github.com/obsproject/obs-studio/blob/master/COPYING
+
+This plugin also links against the Qt framework (Qt 6, used by OBS Studio).
+Qt is Copyright (c) The Qt Company Ltd. and is licensed under LGPL-3.0
+(among other options). See:
+    https://www.qt.io/licensing/
+
+
+Contributions
+-------------
+
+By submitting a contribution to this project (issue, patch, pull request,
+or any other material) you agree that your contribution is licensed under
+the same GPL-2.0-or-later license as the rest of the project, and that you
+have the right to submit it under that license.
+
+
+Disclaimer
+----------
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+for more details.

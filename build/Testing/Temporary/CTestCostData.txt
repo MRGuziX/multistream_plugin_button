@@ -1,2 +1,2 @@
-destination-rules-tests 8 0.00123426
+destination-rules-tests 14 0.000661864
 ---
