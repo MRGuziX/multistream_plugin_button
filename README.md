@@ -27,7 +27,7 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 
 ### Install the prebuilt release
 
-1. Download the latest `obs-multistream-plugin-release.zip` from the `dist/` folder of this repository (or from the project's Releases page if available).
+1. Download the latest Windows release asset (e.g. `obs-multistream-plugin-windows.zip`) from [**GitHub Releases**](https://github.com/MRGuziX/obs_multistream_plugin/releases). There is no committed `dist/` folder in the repo; artifacts are attached to each tagged release.
 2. Close OBS Studio.
 3. Extract the archive. Inside you will find:
    ```
@@ -45,8 +45,12 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 
 **Prerequisites**
 
-- **Windows:** Visual Studio 2022 (C++ desktop workload), **CMake 3.16+**, and **Qt 6** (Widgets; the build uses the same `find_package(Qt6 ...)` as the plugin).
-- A **libobs** + **obs-frontend-api** install that provides `libobsConfig.cmake` and `obs-frontend-api` CMake package (import libraries and headers on Windows). This project does *not* ship a full prebuilt SDK in-tree; the typical approach is to build a **minimal OBS** from the `third_party/obs-studio` submodule and install it to a prefix, or to point CMake at an existing OBS development tree.
+- **Windows:** Visual Studio 2022 (C++ desktop workload), **CMake 3.16+** (must match `cmake_minimum_required` in `CMakeLists.txt`), and **Qt 6** (Widgets; the plugin uses `find_package(Qt6 COMPONENTS Widgets)`).
+- A **libobs** + **obs-frontend-api** install that provides `libobsConfig.cmake` and the `obs-frontend-api` CMake package (import libraries and headers on Windows).
+
+**You cannot run `cmake -S . -B build` on this repo alone until those packages are discoverable.** Either build **OBS Studio** from the `third_party/obs-studio` submodule first (steps 1–2), or point `CMAKE_PREFIX_PATH` / `OBS_SDK_HINT` at an existing OBS development tree you already built.
+
+This project does **not** ship a standalone SDK zip in-tree; the usual path is the submodule plus CMake-fetched dependencies under `third_party/obs-studio/.deps/`.
 
 **1. Fetch submodules**
 
@@ -54,51 +58,68 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 git submodule update --init --recursive
 ```
 
-**2. Build minimal OBS**
+**2. Build OBS Studio from the submodule (required for a typical local setup)**
 
-The **GitHub Actions** release job builds the `third_party/obs-studio` submodule and lets OBS CMake fetch dependencies into `third_party/obs-studio/.deps/` (same pattern as tag **v1.0.8** — no separate obs-deps zip in CI).
+**Option A — Submodule + auto-fetched `.deps/` (same idea as CI)**  
+CMake downloads dependencies into `third_party/obs-studio/.deps/` on the first configure of OBS. Install both the default install and the **Development** component (CMake package files such as `libobsConfig.cmake` are marked `EXCLUDE_FROM_ALL` without it):
 
-For a **local** Windows build you can instead download the [obs-deps](https://github.com/obsproject/obs-deps/releases) archive that matches your OBS branch, extract it, then configure and install libobs with `DEPS_INSTALL_DIR` pointing at that tree:
+```powershell
+cmake -S third_party/obs-studio -B build-obs `
+  -DENABLE_PLUGINS=OFF `
+  -DENABLE_SCRIPTING=OFF `
+  -DCMAKE_INSTALL_PREFIX="<absolute-path>\obs-install"
+cmake --build build-obs --config Release
+cmake --install build-obs --config Release --prefix "<absolute-path>\obs-install"
+cmake --install build-obs --config Release --prefix "<absolute-path>\obs-install" --component Development
+```
+
+**Option B — Manual [obs-deps](https://github.com/obsproject/obs-deps/releases) zip**  
+If you prefer a pre-extracted dependency tree, point `DEPS_INSTALL_DIR` at it when configuring OBS, then build and install as in Option A (still include `--component Development` on the second install line), for example:
 
 ```powershell
 cmake -S third_party/obs-studio -B build-obs `
   -DDEPS_INSTALL_DIR="<path-to-extracted-obs-deps>" `
-  -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_SCRIPTING=OFF `
+  -DENABLE_PLUGINS=OFF `
+  -DENABLE_SCRIPTING=OFF `
   -DCMAKE_INSTALL_PREFIX="<absolute-path>\obs-install"
-cmake --build build-obs --config Release
-cmake --install build-obs --config Release --prefix "<absolute-path>\obs-install" --component Development
 ```
 
-Upstream OBS installs `libobsConfig.cmake` and related files as **Development** with `EXCLUDE_FROM_ALL`, so the `--component Development` install step above is required; a plain `cmake --build ... --target install` often leaves those files out and `find_package(libobs)` fails.
+Then run the same `cmake --build build-obs` and the two `cmake --install` lines (including `--component Development`) as in Option A.
 
 **3. Configure the plugin**
 
-CMake must find `libobs`, `obs-frontend-api`, Qt6, and **SIMDe** (headers ship in obs-deps; `libobsConfig.cmake` pulls them in via `find_dependency(SIMDe)`). Put **obs-deps before** your OBS install on `CMAKE_PREFIX_PATH`. On Windows PowerShell, semicolons inside `-D` strings are easy to get wrong—prefer setting the environment variable, then run `cmake`:
+Point CMake at the OBS **install prefix**, its **cmake** export folder, and the **Qt** + main **obs-deps** trees under `third_party/obs-studio/.deps/` (adjust paths if you used Option B). Example (PowerShell — avoids fragile `;` inside a single `-D`):
 
 ```powershell
-$env:CMAKE_PREFIX_PATH = "<path-to-extracted-obs-deps>;<absolute-path>\obs-install"
-cmake -S . -B build `
-  -Dlibobs_DIR="<folder-containing-libobsConfig.cmake>" `
-  -Dobs-frontend-api_DIR="<folder-containing-obs-frontend-apiConfig.cmake>" `
-  -DSIMDe_INCLUDE_DIR="<obs-deps>\include"
+$prefix = "<absolute-path>\obs-install"
+$depsPath = (Get-ChildItem "third_party/obs-studio\.deps\obs-deps-20*" -Directory | Select-Object -First 1).FullName
+$qt6Path = (Get-ChildItem "third_party/obs-studio\.deps\obs-deps-qt6-*" -Directory | Select-Object -First 1).FullName
+$env:CMAKE_PREFIX_PATH = "$prefix;$prefix\cmake;$qt6Path;$depsPath"
+cmake -S . -B build
 ```
 
-If `simde\simde-common.h` is not under `<obs-deps>\include`, locate it with `Get-ChildItem -Recurse -Filter simde-common.h` and set `-DSIMDe_INCLUDE_DIR` to the parent directory of the `simde` folder (usually `...\include`).
+If `find_package(libobs)` still fails, locate `libobsConfig.cmake` under `obs-install` (often `obs-install\cmake`) and pass **`-Dlibobs_DIR=...`** and **`-Dobs-frontend-api_DIR=...`**. If **SIMDe** is not found, read `SIMDe_INCLUDE_DIR` from `build-obs\CMakeCache.txt` after the OBS build, or set **`-DSIMDe_INCLUDE_DIR`** to the directory that contains the `simde` folder (see `Get-ChildItem -Recurse -Filter simde-common.h` under `.deps`).
 
-Optional: instead of putting OBS on `CMAKE_PREFIX_PATH`, you can set `-DOBS_SDK_HINT=<absolute-path>\obs-install`.
+Optional: **`-DOBS_SDK_HINT=<absolute-path>\obs-install`** instead of putting the prefix on `CMAKE_PREFIX_PATH`.
 
-The version label in the dock matches the `v*.*.*` prefix from `git describe`, unless you set **`-DPLUGIN_VERSION_FROM_TAG=v1.2.3`** at configure time (GitHub release builds pass the pushed tag this way so it always matches the shipping release).
+The dock version string comes from the latest matching **`v*.*.*`** `git describe`, unless you set **`-DPLUGIN_VERSION_FROM_TAG=v1.2.3`** (release CI sets this from the pushed tag).
 
-**4. Build and test**
+**4. Build, test, and install**
 
 ```powershell
 cmake --build build --config Release
+```
+
+On Windows, **`ctest`** runs `unit-tests.exe`, which links **libobs** DLLs — prepend the same `bin` directories you use at runtime (e.g. `obs-install\bin\64bit`, `…\.deps\…\bin`) to **`PATH`** before `ctest`, or run tests from an environment where OBS dev DLLs are already visible:
+
+```powershell
+$env:PATH = "<obs-install>\bin\64bit;<qt6-deps>\bin;<main-deps>\bin;" + $env:PATH
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The built plugin will be at `build\Release\obs-multistream-plugin.dll`. Copy it into OBS's `obs-plugins\64bit\` directory as described above.
+The built plugin is `build\Release\obs-multistream-plugin.dll`. Copy it into OBS's `obs-plugins\64bit\` folder (see Installation above).
 
-To install the same layout the release zip uses (plugin binary + `data/locale/...`):
+To produce the same layout as the release zip (plugin + `data/locale/...`) under a **local** folder:
 
 ```powershell
 cmake --install build --config Release --prefix dist
@@ -171,15 +192,25 @@ When you click OBS's **Stop Streaming**, OBS fires `STREAMING_STOPPING` / `STREA
 
 ```
 src/
-    plugin-main.cpp        - OBS module entry point, dock UI, MultistreamManager
-    destination_rules.cpp  - validation, normalization, platform detection
-    destination_rules.h
+    plugin-main.cpp                 - OBS module entry / lifecycle, frontend hooks
+    plugin_state.{h,cpp}            - globals, runtime status, validation helpers
+    dock_ui.{h,cpp}                 - dock UI (Qt), table, forms
+    multistream_manager.{h,cpp}     - secondary outputs, encoders, retries
+    multistream_manager_signals.cpp - output signal handlers
+    multistream_raii.h              - small OBS handle helpers
+    config_io.{h,cpp}               - JSON load/save, sync with OBS default stream
+    stream_key_storage.{h,cpp}      - optional OS key protection for saved keys
+    destination_rules.{h,cpp}       - validation, normalization, platform detection
+    version.rc                      - Windows file version resource
 tests/
-    destination_rules_tests.cpp
-third_party/                - vendored OBS SDK headers and import libs
-dist/
-    obs-multistream-plugin/         - install layout (obs-plugins/...)
-    obs-multistream-plugin-release.zip
+    test_main.cpp                   - Catch2 runner + obs_startup for obs_data tests
+    destination_rules_tests.cpp   - destination_rules unit tests
+    config_io_tests.cpp             - config JSON round-trip / edge cases
+    dock_refresh_stub.cpp         - no-op refresh for test link
+    plugin_state_test_stub.cpp    - minimal plugin_state for tests (no Qt)
+    multistream_manager_unit_stub.cpp - stub MultistreamManager for tests
+third_party/obs-studio/         - OBS Studio source (git submodule); CMake may fetch deps into .deps/
+data/locale/en-US.ini           - default English strings (obs_module_text)
 CMakeLists.txt
 ```
 
