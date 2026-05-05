@@ -24,7 +24,7 @@ private:
         obs_output_t *output = nullptr;
         obs_encoder_t *video_encoder = nullptr;
         obs_encoder_t *audio_encoder = nullptr;
-        bool using_main_encoder = false;
+        bool sharing_encoder = false;
     };
 
     struct RetryInfo {

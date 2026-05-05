@@ -75,7 +75,7 @@ bool MultistreamManager::release_runtime_resources(DestinationRuntime *runtime)
         runtime->audio_encoder = nullptr;
     }
 
-    runtime->using_main_encoder = false;
+    runtime->sharing_encoder = false;
     return true;
 }
 
@@ -190,18 +190,54 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
     const char *main_enc_id = obs_encoder_get_id(main_venc);
     const std::string wanted_enc = dst.video_encoder_id.empty() ? (main_enc_id ? main_enc_id : "obs_x264")
                                                                 : dst.video_encoder_id;
-    const bool share = main_enc_id && wanted_enc == std::string(main_enc_id);
 
     obs_encoder_t *venc = nullptr;
     obs_encoder_t *aenc = nullptr;
-    bool owns_encoders = false;
+    bool sharing = false;
 
-    if (share) {
-        venc = obs_encoder_get_ref(main_venc);
-        aenc = obs_encoder_get_ref(main_aenc);
-        blog(LOG_INFO, "[obs-multistream-plugin] Sharing main encoder '%s' for platform=%s",
-             main_enc_id, dst.platform.c_str());
-    } else {
+    // Collect every running encoder (main + all secondaries) and pick the
+    // first one whose ID matches what this destination needs.  This avoids
+    // spawning duplicate hardware-encoder sessions when multiple streams
+    // use the same codec.
+    struct EncoderSource {
+        obs_encoder_t *video;
+        obs_encoder_t *audio;
+        bool is_vertical;
+        const char *label;
+    };
+
+    std::vector<EncoderSource> candidates;
+    if (main_venc && main_aenc && main_enc_id)
+        candidates.push_back({main_venc, main_aenc, false, "main"});
+    for (const std::unique_ptr<DestinationRuntime> &rt : runtimes_) {
+        if (!rt || !rt->video_encoder || !rt->audio_encoder)
+            continue;
+        candidates.push_back({rt->video_encoder, rt->audio_encoder,
+                              rt->destination.requires_vertical,
+                              rt->destination.platform.c_str()});
+    }
+
+    for (const EncoderSource &src : candidates) {
+        if (src.is_vertical != vertical)
+            continue;
+        const char *enc_id = obs_encoder_get_id(src.video);
+        if (!enc_id || wanted_enc != std::string(enc_id))
+            continue;
+        venc = obs_encoder_get_ref(src.video);
+        aenc = obs_encoder_get_ref(src.audio);
+        if (venc && aenc) {
+            sharing = true;
+            blog(LOG_INFO,
+                 "[obs-multistream-plugin] Reusing encoder '%s' from %s stream for platform=%s",
+                 enc_id, src.label, dst.platform.c_str());
+            break;
+        }
+        if (venc) { obs_encoder_release(venc); venc = nullptr; }
+        if (aenc) { obs_encoder_release(aenc); aenc = nullptr; }
+    }
+
+    // No running encoder matches — create a dedicated instance
+    if (!sharing) {
         const std::string vname = make_safe_name("multistream_video", dst);
         obs_data_t *vs = obs_data_create();
         if (dst.video_bitrate_kbps > 0) obs_data_set_int(vs, "bitrate", dst.video_bitrate_kbps);
@@ -225,7 +261,13 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         aenc = obs_audio_encoder_create("ffmpeg_aac", aname.c_str(), as, 0, nullptr);
         obs_data_release(as);
         if (aenc) obs_encoder_set_audio(aenc, obs_get_audio());
-        owns_encoders = true;
+    }
+
+    // Ensure video/audio handlers are bound — required for shared encoders whose
+    // handlers may not yet be visible to the new output's data-capture check.
+    if (sharing) {
+        obs_encoder_set_video(venc, obs_get_video());
+        obs_encoder_set_audio(aenc, obs_get_audio());
     }
 
     if (!venc || !aenc) {
@@ -253,7 +295,7 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
     runtime->output = output_holder.release();
     runtime->video_encoder = venc;
     runtime->audio_encoder = aenc;
-    runtime->using_main_encoder = !owns_encoders;
+    runtime->sharing_encoder = sharing;
 
     connect_output_callbacks(runtime);
 
