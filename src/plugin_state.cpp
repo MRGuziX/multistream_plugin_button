@@ -104,8 +104,8 @@ std::string last_runtime_error_for_destination(const Destination &dst)
 
 bool validate_and_log_destination(const Destination &dst, int skip_duplicate_index)
 {
-    const DestinationValidationResult result =
-        validate_destination(g_destinations, dst, skip_duplicate_index);
+    const DestinationValidationResult result = validate_destination(
+        g_destinations, dst, skip_duplicate_index);
     if (result.ok) {
         for (int i = 0; i < static_cast<int>(g_destinations.size()); ++i) {
             if (i == skip_duplicate_index) {

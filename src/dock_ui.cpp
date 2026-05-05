@@ -1,4 +1,5 @@
 #include "dock_ui.h"
+#include "config_io.h"
 #include "plugin_state.h"
 
 #include "destination_rules.h"
@@ -6,10 +7,14 @@
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <obs.h>
+#include <util/config-file.h>
 
 #include <QAbstractItemView>
 #include <QColor>
 #include <QComboBox>
+#include <QDialog>
+#include <QSet>
+#include <QSignalBlocker>
 #include <QDockWidget>
 #include <QFont>
 #include <QFormLayout>
@@ -20,12 +25,14 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <functional>
+#include <string>
 
 #ifndef PLUGIN_UI_VERSION_STRING
 #define PLUGIN_UI_VERSION_STRING "v0.0.0-dev"
@@ -38,18 +45,12 @@ QString tr_ms(const char *id)
     return QString::fromUtf8(obs_module_text(id));
 }
 
-QString encoder_cell_label(const Destination &dst)
-{
-    if (dst.video_encoder_id.empty()) {
-        return tr_ms("EncoderDefault");
-    }
-    const char *disp = obs_encoder_get_display_name(dst.video_encoder_id.c_str());
-    return disp ? QString::fromUtf8(disp) : QString::fromStdString(dst.video_encoder_id);
-}
-
-void populate_video_encoder_combo(QComboBox *cb)
+void populate_video_encoder_combo(QComboBox *cb, PlatformKind platform_kind)
 {
     cb->clear();
+    const std::set<std::string> allowed = allowed_codecs_for_platform(platform_kind);
+    QSet<QString> seen_display;
+
     for (size_t i = 0;; ++i) {
         const char *enc_id = nullptr;
         if (!obs_enum_encoder_types(i, &enc_id)) {
@@ -58,12 +59,28 @@ void populate_video_encoder_combo(QComboBox *cb)
         if (obs_get_encoder_type(enc_id) != OBS_ENCODER_VIDEO) {
             continue;
         }
+        if (!allowed.empty()) {
+            const char *codec = obs_get_encoder_codec(enc_id);
+            if (!codec || allowed.find(codec) == allowed.end()) {
+                continue;
+            }
+        }
         const char *disp = obs_encoder_get_display_name(enc_id);
         const QString label = disp ? QString::fromUtf8(disp) : QString::fromUtf8(enc_id);
+        const QString haystack = (QString::fromUtf8(enc_id) + QLatin1Char(' ') + label).toLower();
+        if (haystack.contains(QStringLiteral("deprecated")) || haystack.contains(QStringLiteral("fallback")) ||
+            haystack.contains(QStringLiteral("obsolete"))) {
+            continue;
+        }
+        const QString display_key = label.trimmed().toLower();
+        if (seen_display.contains(display_key)) {
+            continue;
+        }
+        seen_display.insert(display_key);
         cb->addItem(label, QString::fromUtf8(enc_id));
     }
     if (cb->count() == 0) {
-        cb->addItem(tr_ms("SoftwareX264"), QStringLiteral("obs_x264"));
+        cb->addItem(QStringLiteral("Software (x264)"), QStringLiteral("obs_x264"));
     }
 }
 
@@ -79,9 +96,45 @@ void select_video_encoder_combo(QComboBox *cb, const std::string &saved_id)
     const int fallback = cb->findData(QStringLiteral("obs_x264"));
     if (fallback >= 0) {
         cb->setCurrentIndex(fallback);
-    } else if (cb->count() > 0) {
+        return;
+    }
+    if (cb->count() > 0) {
         cb->setCurrentIndex(0);
     }
+}
+
+QString encoder_display_label(const Destination &dst)
+{
+    std::string id = dst.video_encoder_id;
+    if (id.empty() && dst.is_default) {
+        obs_output_t *out = obs_frontend_get_streaming_output();
+        if (out) {
+            obs_encoder_t *enc = obs_output_get_video_encoder(out);
+            if (enc) {
+                const char *eid = obs_encoder_get_id(enc);
+                if (eid) id = eid;
+            }
+            obs_output_release(out);
+        }
+        if (id.empty()) {
+            config_t *config = obs_frontend_get_profile_config();
+            if (config) {
+                const char *mode = config_get_string(config, "Output", "Mode");
+                const char *enc_id = nullptr;
+                if (mode && strcmp(mode, "Advanced") == 0) {
+                    enc_id = config_get_string(config, "AdvOut", "Encoder");
+                } else {
+                    enc_id = config_get_string(config, "SimpleOutput", "StreamEncoder");
+                }
+                if (enc_id && enc_id[0] != '\0') id = enc_id;
+            }
+        }
+    }
+    if (id.empty()) {
+        return QStringLiteral("Software (x264)");
+    }
+    const char *disp = obs_encoder_get_display_name(id.c_str());
+    return disp ? QString::fromUtf8(disp) : QString::fromStdString(id);
 }
 
 void apply_platform_row_to_combo(QComboBox *platform, const std::string &plat_str)
@@ -161,11 +214,151 @@ std::string error_text_for_table(const RuntimeStatus &status)
     return status.last_error;
 }
 
-void fill_destination_from_form(Destination &dst, QComboBox *video_enc, QSpinBox *video_br, QSpinBox *audio_br)
+struct DockChromeState {
+    QPushButton *btn_add = nullptr;
+    QPushButton *btn_edit = nullptr;
+    QPushButton *btn_remove = nullptr;
+};
+
+DockChromeState g_chrome;
+
+void dock_update_action_buttons()
 {
-    dst.video_encoder_id = video_enc->currentData().toString().toStdString();
-    dst.video_bitrate_kbps = video_br->value();
-    dst.audio_bitrate_kbps = audio_br->value();
+    if (!g_chrome.btn_edit || !g_destinations_table) {
+        return;
+    }
+
+    const int r = g_destinations_table->currentRow();
+    const bool has = r >= 0 && r < static_cast<int>(g_destinations.size());
+    const bool can_edit_non_default = has && !g_destinations[static_cast<size_t>(r)].is_default;
+    const bool live = obs_frontend_streaming_active();
+    const bool edit_remove_enabled = can_edit_non_default && !live;
+
+    g_chrome.btn_edit->setEnabled(edit_remove_enabled);
+    g_chrome.btn_add->setEnabled(true);
+    g_chrome.btn_remove->setEnabled(edit_remove_enabled);
+    if (live) {
+        const QString tip = tr_ms("OpsLockedWhileLive");
+        g_chrome.btn_edit->setToolTip(tip);
+        g_chrome.btn_remove->setToolTip(tip);
+    } else {
+        g_chrome.btn_edit->setToolTip(QString());
+        g_chrome.btn_remove->setToolTip(QString());
+    }
+}
+
+/** Modal dialog with full destination form. Returns true if user saved valid data into *out. */
+bool open_destination_editor_dialog(QWidget *parent, const Destination &initial, Destination *out, int skip_duplicate_index,
+                                    bool is_add)
+{
+    if (!out) {
+        return false;
+    }
+
+    QDialog dlg(parent);
+    dlg.setModal(true);
+    dlg.setWindowTitle(is_add ? tr_ms("DlgAddDestinationTitle") : tr_ms("DlgEditDestinationTitle"));
+    dlg.setMinimumWidth(420);
+
+    auto *vl = new QVBoxLayout(&dlg);
+    auto *form = new QFormLayout();
+
+    auto *platform = new QComboBox(&dlg);
+    if (is_add) {
+        platform->insertItem(0, tr_ms("PlatformChoosePlaceholder"), QVariant());
+    }
+    platform->addItem(tr_ms("PlatformYouTube"), QStringLiteral("YouTube"));
+    platform->addItem(tr_ms("PlatformTwitch"), QStringLiteral("Twitch"));
+    platform->addItem(tr_ms("PlatformKick"), QStringLiteral("Kick"));
+    platform->addItem(tr_ms("PlatformOther"), QStringLiteral("Other"));
+    auto *server = new QLineEdit(&dlg);
+    server->setReadOnly(true);
+    auto *stream_key = new QLineEdit(&dlg);
+    stream_key->setEchoMode(QLineEdit::Password);
+    auto *video_encoder = new QComboBox(&dlg);
+
+    form->addRow(tr_ms("LabelPlatform"), platform);
+    form->addRow(tr_ms("LabelServer"), server);
+    form->addRow(tr_ms("LabelStreamKey"), stream_key);
+    form->addRow(tr_ms("LabelVideoEncoder"), video_encoder);
+    vl->addLayout(form);
+
+    std::function<void()> sync_platform_dependent_ui = [platform, server, video_encoder]() {
+        const QVariant raw = platform->currentData();
+        if (!raw.isValid() || raw.toString().isEmpty()) {
+            server->clear();
+            server->setReadOnly(true);
+            server->setPlaceholderText(tr_ms("ServerChoosePlatformHint"));
+            video_encoder->clear();
+            return;
+        }
+        server->setPlaceholderText(QString());
+        const QString id = raw.toString();
+        const PlatformKind kind = detect_platform_kind(id.toStdString());
+        const bool preset = (id == QStringLiteral("YouTube") || id == QStringLiteral("Twitch") ||
+                             id == QStringLiteral("Kick"));
+        server->setReadOnly(preset);
+        if (preset) {
+            server->setText(QString::fromStdString(default_server_for_platform(kind)));
+        } else {
+            server->clear();
+            server->setReadOnly(false);
+        }
+        const QString prev_enc = video_encoder->currentData().toString();
+        populate_video_encoder_combo(video_encoder, kind);
+        select_video_encoder_combo(video_encoder, prev_enc.toStdString());
+    };
+
+    if (is_add) {
+        platform->setCurrentIndex(0);
+    } else {
+        apply_platform_row_to_combo(platform, initial.platform);
+    }
+    sync_platform_dependent_ui();
+    if (!initial.server.empty()) {
+        server->setText(QString::fromStdString(initial.server));
+    }
+    stream_key->setText(QString::fromStdString(initial.stream_key));
+    select_video_encoder_combo(video_encoder, initial.video_encoder_id);
+
+    QObject::connect(platform, &QComboBox::currentIndexChanged,
+                     [sync_platform_dependent_ui](int) { sync_platform_dependent_ui(); });
+
+    auto *btn_row = new QHBoxLayout();
+    btn_row->addStretch(1);
+    auto *btn_cancel = new QPushButton(tr_ms("BtnCancel"), &dlg);
+    auto *btn_save = new QPushButton(tr_ms("BtnSave"), &dlg);
+    btn_save->setDefault(true);
+    btn_row->addWidget(btn_cancel);
+    btn_row->addWidget(btn_save);
+    vl->addLayout(btn_row);
+
+    QObject::connect(btn_cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+    QObject::connect(btn_save, &QPushButton::clicked, [&]() {
+        const QVariant pdata = platform->currentData();
+        if (is_add && (!pdata.isValid() || pdata.toString().isEmpty())) {
+            QMessageBox::warning(&dlg, tr_ms("DlgAddDestinationTitle"), tr_ms("ErrPickPlatform"));
+            return;
+        }
+
+        Destination updated = initial;
+        updated.platform = pdata.toString().toStdString();
+        if (updated.platform.empty()) {
+            updated.platform = platform->currentText().toStdString();
+        }
+        updated.server = server->text().toStdString();
+        updated.stream_key = stream_key->text().toStdString();
+        updated.video_encoder_id = video_encoder->currentData().toString().toStdString();
+
+        normalize_destination(updated);
+        if (!validate_and_log_destination(updated, skip_duplicate_index)) {
+            return;
+        }
+        *out = std::move(updated);
+        dlg.accept();
+    });
+
+    return dlg.exec() == QDialog::Accepted;
 }
 
 } // namespace
@@ -176,12 +369,16 @@ void refresh_destinations_table()
         return;
     }
 
+    const int row_to_restore = g_destinations_table->currentRow();
+
     g_is_refreshing_table = true;
     std::unordered_map<std::string, RuntimeStatus> status_snapshot;
     {
         std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
         status_snapshot = g_runtime_statuses;
     }
+
+    const bool streaming_active = obs_frontend_streaming_active();
 
     g_destinations_table->setRowCount(static_cast<int>(g_destinations.size()));
     for (int row = 0; row < static_cast<int>(g_destinations.size()); ++row) {
@@ -196,10 +393,7 @@ void refresh_destinations_table()
         auto *enabled_item = new QTableWidgetItem();
         auto *platform_item = new QTableWidgetItem(platform_label);
         auto *server_item = new QTableWidgetItem(QString::fromStdString(dst.server));
-        auto *protocol_item = new QTableWidgetItem(QString::fromStdString(dst.protocol));
-        auto *vertical_item =
-            new QTableWidgetItem(dst.requires_vertical ? tr_ms("VerticalYes") : tr_ms("VerticalNo"));
-        auto *encoder_item = new QTableWidgetItem(encoder_cell_label(dst));
+        auto *encoder_item = new QTableWidgetItem(encoder_display_label(dst));
         auto *status_item = new QTableWidgetItem(QString::fromStdString(status_text_for_table(runtime, dst.enabled)));
         auto *error_item = new QTableWidgetItem(QString::fromStdString(error_text_for_table(runtime)));
 
@@ -207,6 +401,10 @@ void refresh_destinations_table()
         if (dst.is_default) {
             enabled_flags &= ~Qt::ItemIsUserCheckable;
             enabled_flags &= ~Qt::ItemIsEnabled;
+        } else if (streaming_active && dst.enabled) {
+            /* Avoid disabling outputs mid-stream (can break RTMP / OBS pipeline). */
+            enabled_flags &= ~Qt::ItemIsEnabled;
+            enabled_item->setToolTip(tr_ms("EnabledLockWhileLiveTip"));
         }
         enabled_item->setFlags(enabled_flags);
         enabled_item->setCheckState((dst.enabled || dst.is_default) ? Qt::Checked : Qt::Unchecked);
@@ -223,8 +421,6 @@ void refresh_destinations_table()
         }
         platform_item->setFlags(platform_item->flags() & ~Qt::ItemIsEditable);
         server_item->setFlags(server_item->flags() & ~Qt::ItemIsEditable);
-        protocol_item->setFlags(protocol_item->flags() & ~Qt::ItemIsEditable);
-        vertical_item->setFlags(vertical_item->flags() & ~Qt::ItemIsEditable);
         encoder_item->setFlags(encoder_item->flags() & ~Qt::ItemIsEditable);
         status_item->setFlags(status_item->flags() & ~Qt::ItemIsEditable);
         error_item->setFlags(error_item->flags() & ~Qt::ItemIsEditable);
@@ -233,15 +429,23 @@ void refresh_destinations_table()
         g_destinations_table->setItem(row, 0, enabled_item);
         g_destinations_table->setItem(row, 1, platform_item);
         g_destinations_table->setItem(row, 2, server_item);
-        g_destinations_table->setItem(row, 3, protocol_item);
-        g_destinations_table->setItem(row, 4, vertical_item);
-        g_destinations_table->setItem(row, 5, encoder_item);
-        g_destinations_table->setItem(row, 6, status_item);
-        g_destinations_table->setItem(row, 7, error_item);
+        g_destinations_table->setItem(row, 3, encoder_item);
+        g_destinations_table->setItem(row, 4, status_item);
+        g_destinations_table->setItem(row, 5, error_item);
     }
 
     g_destinations_table->resizeColumnsToContents();
     g_is_refreshing_table = false;
+
+    if (row_to_restore >= 0 && row_to_restore < g_destinations_table->rowCount()) {
+        const QSignalBlocker blocker(g_destinations_table);
+        g_destinations_table->selectRow(row_to_restore);
+    } else {
+        const QSignalBlocker blocker(g_destinations_table);
+        g_destinations_table->clearSelection();
+    }
+
+    dock_update_action_buttons();
 }
 
 void create_dock()
@@ -262,178 +466,103 @@ void create_dock()
     header_layout->addWidget(version_label);
     layout->addLayout(header_layout);
 
-    auto *form_widget = new QWidget(container);
-    auto *form = new QFormLayout(form_widget);
-    auto *platform = new QComboBox(form_widget);
-    platform->addItem(tr_ms("PlatformYouTube"), QStringLiteral("YouTube"));
-    platform->addItem(tr_ms("PlatformTwitch"), QStringLiteral("Twitch"));
-    platform->addItem(tr_ms("PlatformKick"), QStringLiteral("Kick"));
-    platform->addItem(tr_ms("PlatformOther"), QStringLiteral("Other"));
-    auto *server = new QLineEdit(form_widget);
-    server->setReadOnly(true);
-    auto *stream_key = new QLineEdit(form_widget);
-    stream_key->setEchoMode(QLineEdit::Password);
-    auto *video_encoder = new QComboBox(form_widget);
-    populate_video_encoder_combo(video_encoder);
-    auto *video_bitrate = new QSpinBox(form_widget);
-    video_bitrate->setRange(0, 500000);
-    video_bitrate->setSingleStep(100);
-    video_bitrate->setSpecialValueText(tr_ms("BitrateDefaultSpecial"));
-    video_bitrate->setToolTip(tr_ms("VideoBitrateTip"));
-    auto *audio_bitrate = new QSpinBox(form_widget);
-    audio_bitrate->setRange(0, 512);
-    audio_bitrate->setSpecialValueText(tr_ms("BitrateDefaultSpecial"));
-    audio_bitrate->setToolTip(tr_ms("AudioBitrateTip"));
-
-    form->addRow(tr_ms("LabelPlatform"), platform);
-    form->addRow(tr_ms("LabelServer"), server);
-    form->addRow(tr_ms("LabelStreamKey"), stream_key);
-    form->addRow(tr_ms("LabelVideoEncoder"), video_encoder);
-    form->addRow(tr_ms("LabelVideoBitrate"), video_bitrate);
-    form->addRow(tr_ms("LabelAudioBitrate"), audio_bitrate);
-
     auto *add_button = new QPushButton(tr_ms("BtnAddDestination"), container);
     auto *edit_button = new QPushButton(tr_ms("BtnEditSelected"), container);
+    edit_button->setEnabled(false);
     auto *remove_button = new QPushButton(tr_ms("BtnRemoveSelected"), container);
 
     g_destinations_table = new QTableWidget(container);
-    g_destinations_table->setColumnCount(8);
+    g_destinations_table->setColumnCount(6);
     g_destinations_table->setHorizontalHeaderLabels({tr_ms("ColEnabled"), tr_ms("ColPlatform"), tr_ms("ColServer"),
-                                                   tr_ms("ColProtocol"), tr_ms("ColVertical"), tr_ms("ColEncoder"),
-                                                   tr_ms("ColStatus"), tr_ms("ColLastError")});
+                                                     tr_ms("ColEncoder"), tr_ms("ColStatus"), tr_ms("ColLastError")});
     g_destinations_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     g_destinations_table->setSelectionMode(QAbstractItemView::SingleSelection);
     g_destinations_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     g_destinations_table->verticalHeader()->setVisible(false);
     g_destinations_table->horizontalHeader()->setStretchLastSection(true);
+    g_destinations_table->setStyleSheet(
+        QStringLiteral("QTableWidget::item:selected { background-color: rgb(160, 40, 40); color: rgb(255, 255, 255); }"
+                       "QTableWidget::item:selected:!active { background-color: rgb(140, 35, 35); color: rgb(255, 255, 255); }"));
 
-    auto sync_platform_dependent_ui = [platform, server]() {
-        const QString id = platform->currentData().toString();
-        const bool preset = (id == QStringLiteral("YouTube") || id == QStringLiteral("Twitch") ||
-                               id == QStringLiteral("Kick"));
-        server->setReadOnly(preset);
-        if (preset) {
-            const PlatformKind kind = detect_platform_kind(id.toStdString());
-            server->setText(QString::fromStdString(default_server_for_platform(kind)));
+    g_chrome = DockChromeState{};
+    g_chrome.btn_add = add_button;
+    g_chrome.btn_edit = edit_button;
+    g_chrome.btn_remove = remove_button;
+
+    QObject::connect(add_button, &QPushButton::clicked, [main_window]() {
+        Destination seed;
+        seed.enabled = true;
+        Destination result;
+        if (!open_destination_editor_dialog(main_window, seed, &result, -1, true)) {
+            return;
         }
-    };
-    sync_platform_dependent_ui();
 
-    QObject::connect(platform, &QComboBox::currentIndexChanged,
-                     [sync_platform_dependent_ui](int) { sync_platform_dependent_ui(); });
+        g_destinations.push_back(std::move(result));
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            g_runtime_statuses[destination_id(g_destinations.back())] = RuntimeStatus{};
+        }
+        save_destinations();
+        refresh_destinations_table();
+        blog(LOG_INFO, "[obs-multistream-plugin] Destination added");
+    });
 
-    QObject::connect(add_button, &QPushButton::clicked,
-                     [platform, server, stream_key, video_encoder, video_bitrate, audio_bitrate, sync_platform_dependent_ui]() {
-                         Destination dst;
-                         dst.platform = platform->currentData().toString().toStdString();
-                         if (dst.platform.empty()) {
-                             dst.platform = platform->currentText().toStdString();
-                         }
-                         dst.server = server->text().toStdString();
-                         dst.stream_key = stream_key->text().toStdString();
-                         fill_destination_from_form(dst, video_encoder, video_bitrate, audio_bitrate);
+    QObject::connect(edit_button, &QPushButton::clicked, [main_window]() {
+        if (!g_destinations_table) {
+            return;
+        }
 
-                         normalize_destination(dst);
-                         if (!validate_and_log_destination(dst)) {
-                             return;
-                         }
+        if (obs_frontend_streaming_active()) {
+            QMessageBox::information(g_destinations_table->window(), tr_ms("BtnEditSelected"),
+                                       tr_ms("OpsLockedWhileLive"));
+            return;
+        }
 
-                         g_destinations.push_back(std::move(dst));
-                         {
-                             std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
-                             g_runtime_statuses[destination_id(g_destinations.back())] = RuntimeStatus{};
-                         }
-                         save_destinations();
-                         refresh_destinations_table();
+        const int row = g_destinations_table->currentRow();
+        if (row < 0 || row >= static_cast<int>(g_destinations.size())) {
+            blog(LOG_WARNING, "[obs-multistream-plugin] No destination selected to edit");
+            return;
+        }
 
-                         stream_key->clear();
-                         video_bitrate->setValue(0);
-                         audio_bitrate->setValue(0);
-                         select_video_encoder_combo(video_encoder, "");
-                         sync_platform_dependent_ui();
-                         blog(LOG_INFO, "[obs-multistream-plugin] Destination added");
-                     });
+        if (g_destinations[static_cast<size_t>(row)].is_default) {
+            blog(LOG_WARNING,
+                 "[obs-multistream-plugin] The OBS default destination is read-only here; edit it in OBS "
+                 "Settings -> Stream");
+            return;
+        }
 
-    QObject::connect(edit_button, &QPushButton::clicked,
-                     [platform, server, stream_key, video_encoder, video_bitrate, audio_bitrate, sync_platform_dependent_ui]() {
-                         if (!g_destinations_table) {
-                             return;
-                         }
+        Destination seed = g_destinations[static_cast<size_t>(row)];
+        Destination result;
+        if (!open_destination_editor_dialog(main_window, seed, &result, row, false)) {
+            return;
+        }
 
-                         const int row = g_destinations_table->currentRow();
-                         if (row < 0 || row >= static_cast<int>(g_destinations.size())) {
-                             blog(LOG_WARNING, "[obs-multistream-plugin] No destination selected to edit");
-                             return;
-                         }
+        Destination &existing = g_destinations[static_cast<size_t>(row)];
+        const std::string old_id = destination_id(existing);
+        const std::string new_id = destination_id(result);
 
-                         if (g_destinations[static_cast<size_t>(row)].is_default) {
-                             blog(LOG_WARNING,
-                                  "[obs-multistream-plugin] The OBS default destination is read-only here; edit it in OBS "
-                                  "Settings -> Stream");
-                             return;
-                         }
+        RuntimeStatus status;
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            const auto status_it = g_runtime_statuses.find(old_id);
+            if (status_it != g_runtime_statuses.end()) {
+                status = status_it->second;
+                g_runtime_statuses.erase(status_it);
+            }
+        }
 
-                         Destination updated = g_destinations[static_cast<size_t>(row)];
-                         updated.platform = platform->currentData().toString().toStdString();
-                         if (updated.platform.empty()) {
-                             updated.platform = platform->currentText().toStdString();
-                         }
-                         updated.server = server->text().toStdString();
-                         updated.stream_key = stream_key->text().toStdString();
-                         fill_destination_from_form(updated, video_encoder, video_bitrate, audio_bitrate);
+        existing = std::move(result);
 
-                         normalize_destination(updated);
-                         if (!validate_and_log_destination(updated, row)) {
-                             return;
-                         }
+        {
+            std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
+            g_runtime_statuses[new_id] = status;
+        }
+        save_destinations();
+        refresh_destinations_table();
+        blog(LOG_INFO, "[obs-multistream-plugin] Destination edited for platform=%s", existing.platform.c_str());
+    });
 
-                         Destination &existing = g_destinations[static_cast<size_t>(row)];
-                         const std::string old_id = destination_id(existing);
-                         const std::string new_id = destination_id(updated);
-
-                         RuntimeStatus status;
-                         {
-                             std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
-                             const auto status_it = g_runtime_statuses.find(old_id);
-                             if (status_it != g_runtime_statuses.end()) {
-                                 status = status_it->second;
-                                 g_runtime_statuses.erase(status_it);
-                             }
-                         }
-
-                         existing = std::move(updated);
-
-                         {
-                             std::lock_guard<std::mutex> lock(g_runtime_status_mutex);
-                             g_runtime_statuses[new_id] = status;
-                         }
-                         save_destinations();
-                         refresh_destinations_table();
-                         sync_platform_dependent_ui();
-                         blog(LOG_INFO, "[obs-multistream-plugin] Destination edited for platform=%s",
-                              existing.platform.c_str());
-                     });
-
-    QObject::connect(g_destinations_table, &QTableWidget::itemSelectionChanged,
-                     [platform, server, stream_key, video_encoder, video_bitrate, audio_bitrate, sync_platform_dependent_ui]() {
-                         if (!g_destinations_table) {
-                             return;
-                         }
-
-                         const int row = g_destinations_table->currentRow();
-                         if (row < 0 || row >= static_cast<int>(g_destinations.size())) {
-                             return;
-                         }
-
-                         const Destination &selected = g_destinations[static_cast<size_t>(row)];
-                         apply_platform_row_to_combo(platform, selected.platform);
-                         sync_platform_dependent_ui();
-                         server->setText(QString::fromStdString(selected.server));
-                         stream_key->setText(QString::fromStdString(selected.stream_key));
-                         select_video_encoder_combo(video_encoder, selected.video_encoder_id);
-                         video_bitrate->setValue(selected.video_bitrate_kbps);
-                         audio_bitrate->setValue(selected.audio_bitrate_kbps);
-                     });
+    QObject::connect(g_destinations_table, &QTableWidget::itemSelectionChanged, []() { dock_update_action_buttons(); });
 
     QObject::connect(g_destinations_table, &QTableWidget::itemChanged, [](QTableWidgetItem *item) {
         if (!item || !g_destinations_table || g_is_refreshing_table || item->column() != 0) {
@@ -450,6 +579,12 @@ void create_dock()
             return;
         }
         const bool enabled = item->checkState() == Qt::Checked;
+        if (obs_frontend_streaming_active() && dst.enabled && !enabled) {
+            g_is_refreshing_table = true;
+            item->setCheckState(Qt::Checked);
+            g_is_refreshing_table = false;
+            return;
+        }
         if (dst.enabled == enabled) {
             return;
         }
@@ -466,6 +601,12 @@ void create_dock()
             return;
         }
 
+        if (obs_frontend_streaming_active()) {
+            QMessageBox::information(g_destinations_table->window(), tr_ms("BtnRemoveSelected"),
+                                       tr_ms("OpsLockedWhileLive"));
+            return;
+        }
+
         const int row = g_destinations_table->currentRow();
         if (row < 0 || row >= static_cast<int>(g_destinations.size())) {
             blog(LOG_WARNING, "[obs-multistream-plugin] No destination selected to remove");
@@ -479,6 +620,7 @@ void create_dock()
         }
 
         const QString plat = QString::fromStdString(g_destinations[static_cast<size_t>(row)].platform);
+        /* DlgRemovePrompt uses %1; tr_ms() yields QString so .arg() substitutes (obs_module_text alone would not). */
         const QMessageBox::StandardButton answer =
             QMessageBox::question(g_destinations_table->window(), tr_ms("DlgRemoveTitle"),
                                   tr_ms("DlgRemovePrompt").arg(plat), QMessageBox::Yes | QMessageBox::No,
@@ -502,24 +644,28 @@ void create_dock()
     manage_layout->addWidget(edit_button);
     manage_layout->addWidget(remove_button);
 
-    layout->addWidget(form_widget);
     layout->addWidget(add_button);
     layout->addWidget(g_destinations_table);
     layout->addLayout(manage_layout);
     layout->addStretch();
 
-    sync_default_destination_from_obs();
     refresh_destinations_table();
-
-    for (int delay_ms : {0, 250, 750, 2000, 5000}) {
-        QTimer::singleShot(delay_ms, container, []() {
-            sync_default_destination_from_obs();
-        });
+    if (g_destinations_table) {
+        const QSignalBlocker blocker(g_destinations_table);
+        g_destinations_table->clearSelection();
     }
+    dock_update_action_buttons();
 
     g_dock = new QDockWidget(tr_ms("DockTitle"), main_window);
     g_dock->setObjectName("obs_multistream_destinations_dock");
     g_dock->setWidget(container);
+
+    QObject::connect(g_dock, &QDockWidget::visibilityChanged, [](bool visible) {
+        if (visible) {
+            sync_default_destination_from_obs();
+            refresh_destinations_table();
+        }
+    });
 
     main_window->addDockWidget(Qt::RightDockWidgetArea, g_dock);
 
@@ -544,4 +690,5 @@ void destroy_dock()
     g_dock->deleteLater();
     g_destinations_table = nullptr;
     g_dock = nullptr;
+    g_chrome = DockChromeState{};
 }

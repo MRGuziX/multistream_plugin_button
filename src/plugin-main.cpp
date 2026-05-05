@@ -28,6 +28,7 @@ void on_frontend_event(enum obs_frontend_event event, void *)
     switch (event) {
     case OBS_FRONTEND_EVENT_STREAMING_STARTING:
         sync_default_destination_from_obs();
+        request_table_refresh();
         break;
     case OBS_FRONTEND_EVENT_STREAMING_STARTED: {
         for (const Destination &dst : g_destinations) {
@@ -44,6 +45,7 @@ void on_frontend_event(enum obs_frontend_event event, void *)
         } else if (g_multistream_manager) {
             g_multistream_manager->start_for_all_enabled(g_destinations);
         }
+        request_table_refresh();
         break;
     }
     case OBS_FRONTEND_EVENT_STREAMING_STOPPING:
@@ -55,6 +57,7 @@ void on_frontend_event(enum obs_frontend_event event, void *)
             }
         }
         g_multistream_manager->stop_all();
+        request_table_refresh();
         break;
     default:
         break;
