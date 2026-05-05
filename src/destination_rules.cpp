@@ -150,6 +150,21 @@ void normalize_destination(Destination &dst)
     dst.protocol = "rtmps";
 }
 
+std::set<std::string> allowed_codecs_for_platform(PlatformKind kind)
+{
+    switch (kind) {
+    case PlatformKind::YouTube:
+        return {"h264", "hevc", "av1"};
+    case PlatformKind::Twitch:
+        return {"h264"};
+    case PlatformKind::Kick:
+        return {"h264"};
+    case PlatformKind::Other:
+    default:
+        return {};
+    }
+}
+
 DestinationValidationResult validate_destination(const std::vector<Destination> &destinations, const Destination &dst,
                                                  int skip_duplicate_index)
 {
@@ -178,3 +193,4 @@ DestinationValidationResult validate_destination(const std::vector<Destination> 
 
     return {true, DestinationValidationError::None};
 }
+

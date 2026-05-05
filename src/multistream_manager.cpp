@@ -1,19 +1,20 @@
 #include "multistream_manager.h"
 
+#include "config_io.h"
+#include "destination_rules.h"
 #include "multistream_raii.h"
 #include "plugin_state.h"
 
 #include <obs-module.h>
+#include <obs-frontend-api.h>
 
 #include <QDockWidget>
 #include <QTimer>
 
 #include <algorithm>
-#include <cstring>
 #include <string>
 #include <utility>
 
-using obs_multistream_detail::ObsEncoderHolder;
 using obs_multistream_detail::ObsOutputHolder;
 using obs_multistream_detail::ObsServiceHolder;
 
@@ -74,6 +75,7 @@ bool MultistreamManager::release_runtime_resources(DestinationRuntime *runtime)
         runtime->audio_encoder = nullptr;
     }
 
+    runtime->using_main_encoder = false;
     return true;
 }
 
@@ -139,70 +141,6 @@ std::string MultistreamManager::make_safe_name(const std::string &prefix, const 
     return prefix + "_" + platform + "_" + std::to_string(id_hash);
 }
 
-static void apply_video_bitrate(obs_data_t *settings, int kbps)
-{
-    if (kbps > 0) {
-        obs_data_set_int(settings, "bitrate", kbps);
-    }
-}
-
-static void apply_audio_bitrate(obs_data_t *settings, int kbps)
-{
-    if (kbps > 0) {
-        obs_data_set_int(settings, "bitrate", kbps);
-    }
-}
-
-obs_encoder_t *MultistreamManager::create_owned_video_encoder(const Destination &dst, bool vertical)
-{
-    const std::string encoder_name =
-        make_safe_name(vertical ? "multistream_vertical_video_encoder" : "multistream_video_encoder", dst);
-
-    const char *primary_id = dst.video_encoder_id.empty() ? "obs_x264" : dst.video_encoder_id.c_str();
-
-    auto try_create = [&](const char *id) -> obs_encoder_t * {
-        obs_data_t *video_settings = obs_data_create();
-        apply_video_bitrate(video_settings, dst.video_bitrate_kbps);
-        obs_encoder_t *enc = obs_video_encoder_create(id, encoder_name.c_str(), video_settings, nullptr);
-        obs_data_release(video_settings);
-        return enc;
-    };
-
-    obs_encoder_t *encoder = try_create(primary_id);
-    if (!encoder && strcmp(primary_id, "obs_x264") != 0) {
-        blog(LOG_WARNING,
-             "[obs-multistream-plugin] Video encoder '%s' unavailable; falling back to obs_x264 for platform=%s",
-             primary_id, dst.platform.c_str());
-        encoder = try_create("obs_x264");
-    }
-
-    if (!encoder) {
-        return nullptr;
-    }
-
-    obs_encoder_set_video(encoder, obs_get_video());
-    if (vertical) {
-        obs_encoder_set_scaled_size(encoder, kVerticalWidth, kVerticalHeight);
-    }
-    return encoder;
-}
-
-obs_encoder_t *MultistreamManager::create_owned_audio_encoder(const Destination &dst)
-{
-    const std::string encoder_name = make_safe_name("multistream_audio_encoder", dst);
-    obs_data_t *audio_settings = obs_data_create();
-    apply_audio_bitrate(audio_settings, dst.audio_bitrate_kbps);
-    obs_encoder_t *encoder =
-        obs_audio_encoder_create("ffmpeg_aac", encoder_name.c_str(), audio_settings, 0, nullptr);
-    obs_data_release(audio_settings);
-
-    if (!encoder) {
-        return nullptr;
-    }
-    obs_encoder_set_audio(encoder, obs_get_audio());
-    return encoder;
-}
-
 bool MultistreamManager::start_single_destination(const Destination &dst)
 {
     const bool vertical = dst.requires_vertical;
@@ -234,13 +172,66 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         return false;
     }
 
-    ObsEncoderHolder video_holder;
-    ObsEncoderHolder audio_holder;
-    video_holder.p = create_owned_video_encoder(dst, vertical);
-    audio_holder.p = create_owned_audio_encoder(dst);
-    if (!video_holder.p || !audio_holder.p) {
-        blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create encoders for platform=%s",
+    obs_output_t *main_out = obs_frontend_get_streaming_output();
+    if (!main_out) {
+        blog(LOG_ERROR, "[obs-multistream-plugin] Main streaming output not available for platform=%s",
              dst.platform.c_str());
+        return false;
+    }
+    obs_encoder_t *main_venc = obs_output_get_video_encoder(main_out);
+    obs_encoder_t *main_aenc = obs_output_get_audio_encoder(main_out, 0);
+    obs_output_release(main_out);
+    if (!main_venc || !main_aenc) {
+        blog(LOG_ERROR, "[obs-multistream-plugin] Main stream encoders not available for platform=%s",
+             dst.platform.c_str());
+        return false;
+    }
+
+    const char *main_enc_id = obs_encoder_get_id(main_venc);
+    const std::string wanted_enc = dst.video_encoder_id.empty() ? (main_enc_id ? main_enc_id : "obs_x264")
+                                                                : dst.video_encoder_id;
+    const bool share = main_enc_id && wanted_enc == std::string(main_enc_id);
+
+    obs_encoder_t *venc = nullptr;
+    obs_encoder_t *aenc = nullptr;
+    bool owns_encoders = false;
+
+    if (share) {
+        venc = obs_encoder_get_ref(main_venc);
+        aenc = obs_encoder_get_ref(main_aenc);
+        blog(LOG_INFO, "[obs-multistream-plugin] Sharing main encoder '%s' for platform=%s",
+             main_enc_id, dst.platform.c_str());
+    } else {
+        const std::string vname = make_safe_name("multistream_video", dst);
+        obs_data_t *vs = obs_data_create();
+        if (dst.video_bitrate_kbps > 0) obs_data_set_int(vs, "bitrate", dst.video_bitrate_kbps);
+        venc = obs_video_encoder_create(wanted_enc.c_str(), vname.c_str(), vs, nullptr);
+        obs_data_release(vs);
+        if (!venc && wanted_enc != "obs_x264") {
+            blog(LOG_WARNING, "[obs-multistream-plugin] Encoder '%s' unavailable, falling back to x264 for platform=%s",
+                 wanted_enc.c_str(), dst.platform.c_str());
+            obs_data_t *vs2 = obs_data_create();
+            if (dst.video_bitrate_kbps > 0) obs_data_set_int(vs2, "bitrate", dst.video_bitrate_kbps);
+            venc = obs_video_encoder_create("obs_x264", vname.c_str(), vs2, nullptr);
+            obs_data_release(vs2);
+        }
+        if (venc) {
+            obs_encoder_set_video(venc, obs_get_video());
+            if (vertical) obs_encoder_set_scaled_size(venc, kVerticalWidth, kVerticalHeight);
+        }
+        const std::string aname = make_safe_name("multistream_audio", dst);
+        obs_data_t *as = obs_data_create();
+        if (dst.audio_bitrate_kbps > 0) obs_data_set_int(as, "bitrate", dst.audio_bitrate_kbps);
+        aenc = obs_audio_encoder_create("ffmpeg_aac", aname.c_str(), as, 0, nullptr);
+        obs_data_release(as);
+        if (aenc) obs_encoder_set_audio(aenc, obs_get_audio());
+        owns_encoders = true;
+    }
+
+    if (!venc || !aenc) {
+        if (venc) obs_encoder_release(venc);
+        if (aenc) obs_encoder_release(aenc);
+        blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create encoders for platform=%s", dst.platform.c_str());
         return false;
     }
 
@@ -260,8 +251,9 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
     runtime->destination = dst;
     runtime->service = service_holder.release();
     runtime->output = output_holder.release();
-    runtime->video_encoder = video_holder.release();
-    runtime->audio_encoder = audio_holder.release();
+    runtime->video_encoder = venc;
+    runtime->audio_encoder = aenc;
+    runtime->using_main_encoder = !owns_encoders;
 
     connect_output_callbacks(runtime);
 

@@ -45,9 +45,10 @@ void sync_default_destination_from_obs()
     auto it = std::find_if(g_destinations.begin(), g_destinations.end(),
                            [](const Destination &d) { return d.is_default; });
 
-    const bool has_valid = !default_dst.server.empty() && !default_dst.stream_key.empty();
-
-    if (!has_valid) {
+    /* Keep the locked OBS-default row visible whenever the primary streaming service exists,
+     * even if server/key are not both populated yet (OBS often omits or defers the stream key
+     * in service settings until streaming starts). Remove the row only when there is no service. */
+    if (!primary_service) {
         if (it != g_destinations.end()) {
             {
                 std::lock_guard<std::mutex> lock(g_runtime_status_mutex);

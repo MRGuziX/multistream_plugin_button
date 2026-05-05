@@ -37,16 +37,6 @@ std::string MultistreamManager::make_safe_name(const std::string &prefix, const 
     return prefix + "_" + platform + "_" + std::to_string(id_hash);
 }
 
-obs_encoder_t *MultistreamManager::create_owned_video_encoder(const Destination &, bool)
-{
-    return nullptr;
-}
-
-obs_encoder_t *MultistreamManager::create_owned_audio_encoder(const Destination &)
-{
-    return nullptr;
-}
-
 bool MultistreamManager::start_single_destination(const Destination &)
 {
     return false;

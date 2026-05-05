@@ -137,8 +137,40 @@ jobs:
           if (Test-Path obs-multistream-plugin-windows.zip) { Remove-Item obs-multistream-plugin-windows.zip }
           Compress-Archive -Path "dist\*" -DestinationPath obs-multistream-plugin-windows.zip
 
+      # softprops/action-gh-release has intermittently failed with HTTP 500 / "Error updating policy" on asset upload.
+      # Use GitHub CLI (preinstalled on windows-latest); idempotent if the tag release already exists from a retry.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: obs-multistream-plugin-windows.zip
-          generate_release_notes: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $zip = "obs-multistream-plugin-windows.zip"
+          $isPre = '${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}' -eq 'true'
+
+          function Invoke-WithRetry {
+            param([scriptblock]$Action, [int]$Attempts = 4)
+            $delay = 8
+            for ($i = 1; $i -le $Attempts; $i++) {
+              & $Action
+              if ($LASTEXITCODE -eq 0) { return }
+              Write-Host "Attempt $i failed (exit $LASTEXITCODE); sleeping ${delay}s..."
+              Start-Sleep -Seconds $delay
+              $delay = [Math]::Min($delay * 2, 60)
+            }
+            Write-Error "Operation failed after $Attempts attempts (last exit $LASTEXITCODE)"
+            exit 1
+          }
+
+          gh release view $tag 1>$null 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists; uploading / replacing asset..."
+            Invoke-WithRetry { gh release upload $tag $zip --clobber }
+          } else {
+            Write-Host "Creating release $tag with asset..."
+            if ($isPre) {
+              Invoke-WithRetry { gh release create $tag $zip --generate-notes --prerelease }
+            } else {
+              Invoke-WithRetry { gh release create $tag $zip --generate-notes }
+            }
+          }
