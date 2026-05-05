@@ -2,6 +2,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -80,4 +81,33 @@ TEST_CASE("duplicate detection")
     REQUIRE(duplicate_result.error == DestinationValidationError::Duplicate);
 
     REQUIRE_FALSE(has_duplicate_destination(existing, existing[0], 0));
+}
+
+TEST_CASE("allowed_codecs_for_platform returns correct codecs")
+{
+    const auto yt = allowed_codecs_for_platform(PlatformKind::YouTube);
+    REQUIRE(yt.count("h264") == 1);
+    REQUIRE(yt.count("hevc") == 1);
+    REQUIRE(yt.count("av1") == 1);
+
+    const auto tw = allowed_codecs_for_platform(PlatformKind::Twitch);
+    REQUIRE(tw.count("h264") == 1);
+    REQUIRE(tw.count("hevc") == 0);
+    REQUIRE(tw.count("av1") == 0);
+
+    const auto ki = allowed_codecs_for_platform(PlatformKind::Kick);
+    REQUIRE(ki.count("h264") == 1);
+    REQUIRE(ki.count("hevc") == 0);
+
+    const auto other = allowed_codecs_for_platform(PlatformKind::Other);
+    REQUIRE(other.empty());
+}
+
+TEST_CASE("detect_platform_kind identifies platforms correctly")
+{
+    REQUIRE(detect_platform_kind("YouTube") == PlatformKind::YouTube);
+    REQUIRE(detect_platform_kind("Twitch") == PlatformKind::Twitch);
+    REQUIRE(detect_platform_kind("Kick") == PlatformKind::Kick);
+    REQUIRE(detect_platform_kind("Facebook") == PlatformKind::Other);
+    REQUIRE(detect_platform_kind("Custom") == PlatformKind::Other);
 }
