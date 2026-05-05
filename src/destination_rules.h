@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <set>
 #include <vector>
 
 struct Destination {
@@ -52,5 +53,9 @@ std::string default_server_for_platform(PlatformKind kind);
 bool has_duplicate_destination(const std::vector<Destination> &destinations, const Destination &candidate,
                               int skip_index = -1);
 void normalize_destination(Destination &dst);
+
+/** Codecs accepted by a platform for RTMP ingest. Empty set = all codecs allowed. */
+std::set<std::string> allowed_codecs_for_platform(PlatformKind kind);
+
 DestinationValidationResult validate_destination(const std::vector<Destination> &destinations, const Destination &dst,
                                                  int skip_duplicate_index = -1);
