@@ -218,10 +218,10 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
     obs_encoder_t *aenc = nullptr;
     bool sharing = false;
 
-    // Collect every running encoder (main + all secondaries) and pick the
-    // first one whose ID matches what this destination needs.  This avoids
-    // spawning duplicate hardware-encoder sessions when multiple streams
-    // use the same codec.
+    // Search every running encoder (main + all secondaries) for a
+    // shareable match.  Sharing via obs_encoder_get_ref() lets OBS route
+    // the same encoded data to multiple RTMP outputs without spawning
+    // extra hardware-encoder sessions (same mechanism as obs-multi-rtmp).
     struct EncoderSource {
         obs_encoder_t *video;
         obs_encoder_t *audio;
@@ -251,7 +251,7 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         if (venc && aenc) {
             sharing = true;
             blog(LOG_INFO,
-                 "[obs-multistream-plugin] Reusing encoder '%s' from %s stream for platform=%s",
+                 "[obs-multistream-plugin] Sharing encoder '%s' from %s stream for platform=%s",
                  enc_id, src.label, dst.platform.c_str());
             break;
         }
@@ -259,18 +259,39 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         if (aenc) { obs_encoder_release(aenc); aenc = nullptr; }
     }
 
-    // No running encoder matches — create a dedicated instance
+    // No shareable encoder found — create a dedicated instance with
+    // streaming-safe defaults.  Hardware encoders like NVENC need explicit
+    // keyint_sec and rate_control; their built-in defaults produce output
+    // that ingest servers (especially Twitch) reject.
     if (!sharing) {
         const std::string vname = make_safe_name("multistream_video", dst);
+
         obs_data_t *vs = obs_data_create();
-        if (dst.video_bitrate_kbps > 0) obs_data_set_int(vs, "bitrate", dst.video_bitrate_kbps);
+        int bitrate = dst.video_bitrate_kbps;
+        if (bitrate <= 0) {
+            config_t *profile = obs_frontend_get_profile_config();
+            if (profile) {
+                const char *mode = config_get_string(profile, "Output", "Mode");
+                if (mode && strcmp(mode, "Advanced") == 0)
+                    bitrate = static_cast<int>(config_get_int(profile, "AdvOut", "VBitrate"));
+                else
+                    bitrate = static_cast<int>(config_get_int(profile, "SimpleOutput", "VBitrate"));
+            }
+        }
+        if (bitrate > 0)
+            obs_data_set_int(vs, "bitrate", bitrate);
+        obs_data_set_int(vs, "keyint_sec", 2);
+        obs_data_set_string(vs, "rate_control", "CBR");
+
         venc = obs_video_encoder_create(wanted_enc.c_str(), vname.c_str(), vs, nullptr);
         obs_data_release(vs);
         if (!venc && wanted_enc != "obs_x264") {
             blog(LOG_WARNING, "[obs-multistream-plugin] Encoder '%s' unavailable, falling back to x264 for platform=%s",
                  wanted_enc.c_str(), dst.platform.c_str());
             obs_data_t *vs2 = obs_data_create();
-            if (dst.video_bitrate_kbps > 0) obs_data_set_int(vs2, "bitrate", dst.video_bitrate_kbps);
+            if (bitrate > 0) obs_data_set_int(vs2, "bitrate", bitrate);
+            obs_data_set_int(vs2, "keyint_sec", 2);
+            obs_data_set_string(vs2, "rate_control", "CBR");
             venc = obs_video_encoder_create("obs_x264", vname.c_str(), vs2, nullptr);
             obs_data_release(vs2);
         }
@@ -278,6 +299,7 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
             obs_encoder_set_video(venc, obs_get_video());
             if (vertical) obs_encoder_set_scaled_size(venc, kVerticalWidth, kVerticalHeight);
         }
+
         const std::string aname = make_safe_name("multistream_audio", dst);
         obs_data_t *as = obs_data_create();
         if (dst.audio_bitrate_kbps > 0) obs_data_set_int(as, "bitrate", dst.audio_bitrate_kbps);
@@ -285,10 +307,6 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         obs_data_release(as);
         if (aenc) obs_encoder_set_audio(aenc, obs_get_audio());
     }
-
-    // Note: shared encoders already have video/audio handlers bound by the
-    // stream that created them.  obs_encoder_set_video() is a no-op on an
-    // active encoder, so we intentionally skip it for the sharing path.
 
     if (!venc || !aenc) {
         if (venc) obs_encoder_release(venc);
