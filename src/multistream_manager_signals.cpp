@@ -120,6 +120,20 @@ void MultistreamManager::on_output_reconnect_success(void *param, calldata_t *)
 void MultistreamManager::on_output_deactivate(void *param, calldata_t *params)
 {
     auto *runtime = static_cast<DestinationRuntime *>(param);
+    if (!runtime->output) {
+        return;
+    }
+
+    /* libobs ends data capture (and signals "deactivate") while RTMP outputs reconnect after a drop.
+     * Treating that as a hard failure schedules our own cleanup/retry and fights OBS's reconnect,
+     * which can loop (e.g. Twitch secondary while YouTube primary is live). */
+    if (obs_output_reconnecting(runtime->output)) {
+        blog(LOG_INFO,
+             "[obs-multistream-plugin] Ignoring deactivate for platform=%s (output reconnect in progress)",
+             runtime->destination.platform.c_str());
+        return;
+    }
+
     const Destination destination = runtime->destination;
     const std::string id = destination_id(destination);
     const std::string reason = callback_reason(params, "Output deactivated");
@@ -131,8 +145,12 @@ void MultistreamManager::on_output_deactivate(void *param, calldata_t *params)
     if (g_multistream_manager) {
         if (g_multistream_manager->stopping_) {
             request_cleanup_by_id(id);
-        } else {
-            g_multistream_manager->handle_runtime_deactivated(destination);
+        } else if (g_dock) {
+            QTimer::singleShot(0, g_dock, [destination]() {
+                if (g_multistream_manager) {
+                    g_multistream_manager->handle_runtime_deactivated(destination);
+                }
+            });
         }
     }
 }
