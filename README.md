@@ -13,7 +13,7 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 - Go live on **YouTube, Twitch, Kick** (and any custom RTMP/RTMPS endpoint) simultaneously.
 - Manage all destinations from a docked panel inside OBS — no external services, no second machine.
 - Keep their existing OBS *Settings → Stream* configuration as the **primary** destination (locked, read-only in the plugin), and only manage the *additional* destinations from the dock.
-- Use **vertical scaling** per destination (e.g., 720x1280) for platforms that prefer a portrait feed.
+- Choose a **video encoder per destination** from a platform-filtered list — the plugin only shows encoders compatible with each platform's codec requirements.
 - Get **per-destination status** (Idle / Starting / Live / Failed / Stopped), error reporting, and automatic retries with exponential backoff on transient failures.
 
 ---
@@ -27,9 +27,9 @@ OBS Studio natively supports streaming to a single destination at a time. This p
 
 ### Install the prebuilt release
 
-1. Download the latest Windows release asset (e.g. `obs-multistream-plugin-windows.zip`) from [**GitHub Releases**](https://github.com/MRGuziX/obs_multistream_plugin/releases). There is no committed `dist/` folder in the repo; artifacts are attached to each tagged release.
+1. Download the latest `obs-multistream-plugin-windows.zip` from [**GitHub Releases**](https://github.com/MRGuziX/obs_multistream_plugin/releases).
 2. Close OBS Studio.
-3. Extract the archive. Inside you will find the same layout CMake installs under an OBS prefix — the plugin binary **and** the English locale file:
+3. Extract the archive into your OBS installation folder (e.g. `C:\Program Files\obs-studio\`). The zip contains:
    ```
    obs-plugins/
        obs-multistream-plugin.dll
@@ -39,101 +39,11 @@ OBS Studio natively supports streaming to a single destination at a time. This p
                locale/
                    en-US.ini
    ```
-4. Copy **`obs-multistream-plugin.dll`** into your OBS **64-bit plugins** folder (next to other `.dll` plugins):
-   ```
-   <OBS install>\obs-plugins\64bit\
-   ```
-   For a default install that is often `C:\Program Files\obs-studio\obs-plugins\64bit\`.
-5. Copy the **`data`** tree so the locale file ends up under the OBS **data** root (OBS loads plugin strings from here). After copying, you should have:
-   ```
-   <OBS install>\data\obs-plugins\obs-multistream-plugin\locale\en-US.ini
-   ```
-   Concretely: merge the archive’s `data\obs-plugins\obs-multistream-plugin\` folder into `<OBS install>\data\obs-plugins\` (create `obs-multistream-plugin\locale\` if needed), so **`en-US.ini`** sits in that `locale` folder.
-6. Start OBS. The new dock **Multistream Destinations** should be available under *View → Docks*.
+4. Start OBS. The new dock **Multistream Destinations** should be available under *View → Docks*.
 
 ### Build from source
 
-**Prerequisites**
-
-- **Windows:** Visual Studio 2022 (C++ desktop workload), **CMake 3.16+** (must match `cmake_minimum_required` in `CMakeLists.txt`), and **Qt 6** (Widgets; the plugin uses `find_package(Qt6 COMPONENTS Widgets)`).
-- A **libobs** + **obs-frontend-api** install that provides `libobsConfig.cmake` and the `obs-frontend-api` CMake package (import libraries and headers on Windows).
-
-**You cannot run `cmake -S . -B build` on this repo alone until those packages are discoverable.** Either build **OBS Studio** from the `third_party/obs-studio` submodule first (steps 1–2), or point `CMAKE_PREFIX_PATH` / `OBS_SDK_HINT` at an existing OBS development tree you already built.
-
-This project does **not** ship a standalone SDK zip in-tree; the usual path is the submodule plus CMake-fetched dependencies under `third_party/obs-studio/.deps/`.
-
-**1. Fetch submodules**
-
-```powershell
-git submodule update --init --recursive
-```
-
-**2. Build OBS Studio from the submodule (required for a typical local setup)**
-
-**Option A — Submodule + auto-fetched `.deps/` (same idea as CI)**  
-CMake downloads dependencies into `third_party/obs-studio/.deps/` on the first configure of OBS. Install both the default install and the **Development** component (CMake package files such as `libobsConfig.cmake` are marked `EXCLUDE_FROM_ALL` without it):
-
-```powershell
-cmake -S third_party/obs-studio -B build-obs `
-  -DENABLE_PLUGINS=OFF `
-  -DENABLE_SCRIPTING=OFF `
-  -DCMAKE_INSTALL_PREFIX="<absolute-path>\obs-install"
-cmake --build build-obs --config Release
-cmake --install build-obs --config Release --prefix "<absolute-path>\obs-install"
-cmake --install build-obs --config Release --prefix "<absolute-path>\obs-install" --component Development
-```
-
-**Option B — Manual [obs-deps](https://github.com/obsproject/obs-deps/releases) zip**  
-If you prefer a pre-extracted dependency tree, point `DEPS_INSTALL_DIR` at it when configuring OBS, then build and install as in Option A (still include `--component Development` on the second install line), for example:
-
-```powershell
-cmake -S third_party/obs-studio -B build-obs `
-  -DDEPS_INSTALL_DIR="<path-to-extracted-obs-deps>" `
-  -DENABLE_PLUGINS=OFF `
-  -DENABLE_SCRIPTING=OFF `
-  -DCMAKE_INSTALL_PREFIX="<absolute-path>\obs-install"
-```
-
-Then run the same `cmake --build build-obs` and the two `cmake --install` lines (including `--component Development`) as in Option A.
-
-**3. Configure the plugin**
-
-Point CMake at the OBS **install prefix**, its **cmake** export folder, and the **Qt** + main **obs-deps** trees under `third_party/obs-studio/.deps/` (adjust paths if you used Option B). Example (PowerShell — avoids fragile `;` inside a single `-D`):
-
-```powershell
-$prefix = "<absolute-path>\obs-install"
-$depsPath = (Get-ChildItem "third_party/obs-studio\.deps\obs-deps-20*" -Directory | Select-Object -First 1).FullName
-$qt6Path = (Get-ChildItem "third_party/obs-studio\.deps\obs-deps-qt6-*" -Directory | Select-Object -First 1).FullName
-$env:CMAKE_PREFIX_PATH = "$prefix;$prefix\cmake;$qt6Path;$depsPath"
-cmake -S . -B build
-```
-
-If `find_package(libobs)` still fails, locate `libobsConfig.cmake` under `obs-install` (often `obs-install\cmake`) and pass **`-Dlibobs_DIR=...`** and **`-Dobs-frontend-api_DIR=...`**. If **SIMDe** is not found, read `SIMDe_INCLUDE_DIR` from `build-obs\CMakeCache.txt` after the OBS build, or set **`-DSIMDe_INCLUDE_DIR`** to the directory that contains the `simde` folder (see `Get-ChildItem -Recurse -Filter simde-common.h` under `.deps`).
-
-Optional: **`-DOBS_SDK_HINT=<absolute-path>\obs-install`** instead of putting the prefix on `CMAKE_PREFIX_PATH`.
-
-The dock version string comes from the latest matching **`v*.*.*`** `git describe`, unless you set **`-DPLUGIN_VERSION_FROM_TAG=v1.2.3`** (release CI sets this from the pushed tag).
-
-**4. Build, test, and install**
-
-```powershell
-cmake --build build --config Release
-```
-
-On Windows, **`ctest`** runs `unit-tests.exe`, which links **libobs** DLLs — prepend the same `bin` directories you use at runtime (e.g. `obs-install\bin\64bit`, `…\.deps\…\bin`) to **`PATH`** before `ctest`, or run tests from an environment where OBS dev DLLs are already visible:
-
-```powershell
-$env:PATH = "<obs-install>\bin\64bit;<qt6-deps>\bin;<main-deps>\bin;" + $env:PATH
-ctest --test-dir build -C Release --output-on-failure
-```
-
-The built plugin is `build\Release\obs-multistream-plugin.dll`. Copy it into OBS's `obs-plugins\64bit\` folder (see Installation above).
-
-To produce the same layout as the release zip (plugin + `data/locale/...`) under a **local** folder:
-
-```powershell
-cmake --install build --config Release --prefix dist
-```
+See the [Build from source](#build-from-source-1) section at the end of this document.
 
 ---
 
@@ -143,12 +53,9 @@ cmake --install build --config Release --prefix dist
 
 After installation, OBS shows a **Multistream Destinations** dock containing:
 
-- A **Platform / Server / Stream key** form to add a new destination.
-  - Selecting a platform (YouTube / Twitch / Kick) auto-fills a sensible default RTMP/RTMPS server.
-- An **Add destination** button.
-- A **table** listing all configured destinations with columns:
-  *Enabled, Platform, Server, Protocol, Vertical, Status, Last error*.
-- **Edit selected** and **Remove selected** buttons.
+- An **Add destination** button — opens a modal dialog with platform, server, stream key, and video encoder fields.
+- A **table** listing destinations with columns: *Enabled, Platform, Server, Encoder, Status, Last error*.
+- **Edit selected** and **Remove selected** buttons (disabled while streaming).
 
 ### The locked "OBS default" row
 
@@ -157,18 +64,17 @@ The first row in the table mirrors the streaming service configured in OBS *Sett
 - **Pre-checked** and **always enabled** (OBS itself streams to it).
 - **Locked / read-only** — you can't edit, uncheck, or remove it from the dock. Change it in *OBS Settings → Stream* instead.
 - **Not persisted** to the plugin's JSON config — it's reconstructed from OBS at runtime.
-- Shown in italic with a 🔒 (OBS default) suffix and a tooltip explaining where to edit it.
-
-This guarantees you always know what OBS itself will broadcast to, and prevents accidentally adding a duplicate of the OBS-primary destination.
+- Shown in italic with a lock icon and a tooltip explaining where to edit it.
 
 ### Adding additional destinations
 
-1. Pick a platform from the dropdown (YouTube, Twitch, or Kick — the server URL fills in automatically). For other platforms, you can edit a row and replace the server with any valid `rtmp://` or `rtmps://` URL.
-2. Paste your **stream key** for that platform.
-3. Click **Add destination**. The row appears in the table with **Enabled** checked.
-4. Toggle the **Enabled** checkbox per row to control which destinations go live next time you start streaming.
+1. Click **Add destination** in the dock.
+2. Pick a **platform** (YouTube, Twitch, Kick, or Other). The server URL fills in automatically for known platforms.
+3. Enter your **stream key**.
+4. Choose a **video encoder** from the filtered list (see Encoder handling below).
+5. Click **Save**. The new row appears in the table with **Enabled** checked.
 
-Validation rules enforced when adding/editing:
+Validation rules:
 
 - Platform, server and stream key are required.
 - Server must start with `rtmp://` or `rtmps://`.
@@ -178,49 +84,121 @@ Validation rules enforced when adding/editing:
 
 Destinations are saved to `obs-multistream-plugin.json` in OBS's plugin config folder.
 
+### Encoder handling
+
+Understanding how encoders work is key to a smooth multistream experience.
+
+#### What is an encoder?
+
+An encoder compresses your raw video into a format that streaming platforms can receive. There are two main types:
+
+- **Hardware encoders** (e.g., NVIDIA NVENC, AMD AMF, Intel QSV) — run on your GPU. Very fast, minimal CPU impact. But GPUs have a **session limit** — most consumer NVIDIA cards allow only **2–3 simultaneous NVENC sessions**.
+- **Software encoders** (e.g., x264) — run on your CPU. No session limits, but uses CPU resources.
+
+Each encoder produces video in a specific **codec** (compression format):
+
+| Codec | Common encoders | Notes |
+|-------|----------------|-------|
+| **H.264** | NVIDIA NVENC H.264, Software x264, AMD H.264 | Universally supported by all platforms |
+| **HEVC** | NVIDIA NVENC HEVC, AMD HEVC | Better quality at same bitrate, but **not supported by Twitch or Kick** |
+| **AV1** | NVIDIA NVENC AV1, AMD AV1 | Newest, best compression, supported by YouTube only |
+
+#### Platform codec restrictions
+
+Not every platform accepts every codec. When you add a destination, the encoder dropdown **only shows compatible encoders**:
+
+| Platform | Accepted codecs | Why |
+|----------|----------------|-----|
+| **YouTube** | H.264, HEVC, AV1 | Full codec support |
+| **Twitch** | H.264 only | HEVC and AV1 streams will connect but get rejected |
+| **Kick** | H.264 only | Same as Twitch |
+| **Other** | All codecs | No filtering — you know your server's requirements |
+
+This means if you select Twitch as the platform, you will **not** see NVIDIA NVENC HEVC in the encoder list — only H.264-compatible encoders appear. This prevents you from picking an encoder that the platform would reject.
+
+Deprecated, fallback, and obsolete encoders are also hidden from the list.
+
+#### Smart encoder session sharing
+
+When you pick the **same encoder** for a secondary destination as your main OBS stream, the plugin does not create a new encoder instance. Instead, it **shares the existing encoder session** — the encoder runs once and OBS routes the same encoded data to multiple RTMP servers simultaneously.
+
+This means:
+
+- **Zero extra CPU/GPU cost** — no additional encoding work, just network output.
+- **No GPU session limit issues** — one NVENC session serves all destinations that share it.
+- **Same quality and bitrate** — all destinations sharing an encoder receive identical video.
+
+When you pick a **different encoder**, the plugin creates a **dedicated instance** for that destination. This is useful when you want different quality/bitrate or need a different codec, but it does consume additional CPU or GPU resources.
+
+#### Example setups
+
+**Best setup — maximum efficiency (recommended):**
+
+Set your main OBS stream (*Settings → Stream*) to **NVIDIA NVENC H.264**. Then add YouTube, Twitch, and Kick destinations — each also set to **NVIDIA NVENC H.264**. All four streams share **one** GPU encoder session. One NVENC session, all platforms, zero extra cost.
+
+```
+Main stream (YouTube)  → NVIDIA NVENC H.264  ← shared session
+Twitch destination     → NVIDIA NVENC H.264  ← same session (shared)
+Kick destination       → NVIDIA NVENC H.264  ← same session (shared)
+```
+
+**Mixed setup — different quality per destination:**
+
+Main stream uses NVIDIA NVENC H.264 at high bitrate for YouTube. Twitch destination uses Software x264 at lower bitrate for a lighter stream. Two encoder instances: one GPU, one CPU.
+
+```
+Main stream (YouTube)  → NVIDIA NVENC H.264 (10,000 kbps)  ← GPU
+Twitch destination     → Software x264 (6,000 kbps)         ← CPU
+```
+
+**What NOT to do:**
+
+Setting the main stream to NVIDIA NVENC **HEVC** and a Twitch destination to NVIDIA NVENC **H.264** creates **two separate NVENC sessions** on your GPU. Most consumer GPUs will reject the second session. Twitch also cannot accept HEVC. Instead, use H.264 for the main stream so all destinations can share it, or use Software x264 for Twitch.
+
 ### Going live
 
 When you click OBS's native **Start Streaming** button:
 
 1. OBS starts its own primary stream (the locked row in the dock is marked **Live**).
-2. One event-loop tick later, the plugin starts each **enabled** additional destination as a separate `rtmp_output` with **its own dedicated video and audio encoders** (`obs_x264` + `ffmpeg_aac`) bound to OBS's global video/audio. Each destination owns its encoders — they are never shared with the main OBS output, which avoids the use-after-free / encoder-reuse crash that would otherwise happen.
-3. Each destination's status transitions through *Starting → Live*. If a destination fails to start or drops, the plugin retries up to **3 times** with **2s / 4s / 6s** backoff. After the retry budget is exhausted the destination is marked **Failed** with a terminal reason in the *Last error* column.
-4. Vertical-flagged destinations are scaled to **720×1280** by their dedicated encoder.
+2. One event-loop tick later, the plugin starts each **enabled** additional destination:
+   - If the destination's encoder matches the main stream → **shares** the encoder session.
+   - If different → **creates** a dedicated encoder instance (with x264 fallback if the requested encoder is unavailable).
+3. Each destination's status transitions through *Starting → Live*. If a destination fails to start or drops, the plugin retries up to **3 times** with **2s / 4s / 6s** backoff.
 
 ### Stopping
 
-When you click OBS's **Stop Streaming**, OBS fires `STREAMING_STOPPING` / `STREAMING_STOPPED`. The plugin then stops every active secondary output, releases each destination's output, service, and encoders, and clears any pending retries.
+When you click OBS's **Stop Streaming**, the plugin stops every active secondary output, releases each destination's output and service (and dedicated encoders if any), and clears pending retries.
 
-### Reliability notes
+### Streaming state protections
 
-- Each destination has its **own** service, output, video encoder, and audio encoder — these are tracked in a `DestinationRuntime` and released cleanly on stop or on failed start.
-- Secondary outputs are started one event-loop tick **after** OBS reports `STREAMING_STARTED`, to avoid racing OBS while it wires up its main pipeline.
-- The locked "OBS default" row is **never** started by the plugin — OBS owns that stream; the plugin only mirrors its Live/Stopped status in the table.
-- The plugin keeps signal-handler lifetimes tight: callbacks are connected on start and disconnected on stop / cleanup, so output signals can never fire into a destroyed runtime.
+While streaming is active:
 
-### File layout
+- **Edit** and **Remove** buttons are disabled — you cannot modify destinations mid-stream.
+- **Enabled** checkboxes for active destinations are locked — you cannot disable a live output.
+- All controls unlock when streaming stops.
+
+---
+
+## File layout
 
 ```
 src/
     plugin-main.cpp                 - OBS module entry / lifecycle, frontend hooks
     plugin_state.{h,cpp}            - globals, runtime status, validation helpers
-    dock_ui.{h,cpp}                 - dock UI (Qt), table, forms
-    multistream_manager.{h,cpp}     - secondary outputs, encoders, retries
+    dock_ui.{h,cpp}                 - dock UI (Qt), table, add/edit dialogs
+    multistream_manager.{h,cpp}     - secondary outputs, encoder sharing, retries
     multistream_manager_signals.cpp - output signal handlers
     multistream_raii.h              - small OBS handle helpers
     config_io.{h,cpp}               - JSON load/save, sync with OBS default stream
     stream_key_storage.{h,cpp}      - optional OS key protection for saved keys
-    destination_rules.{h,cpp}       - validation, normalization, platform detection
+    destination_rules.{h,cpp}       - validation, normalization, platform codec filtering
     version.rc                      - Windows file version resource
 tests/
-    test_main.cpp                   - Catch2 runner + obs_startup for obs_data tests
-    destination_rules_tests.cpp   - destination_rules unit tests
+    destination_rules_tests.cpp     - validation, normalization, platform codec tests
     config_io_tests.cpp             - config JSON round-trip / edge cases
-    dock_refresh_stub.cpp         - no-op refresh for test link
-    plugin_state_test_stub.cpp    - minimal plugin_state for tests (no Qt)
-    multistream_manager_unit_stub.cpp - stub MultistreamManager for tests
-third_party/obs-studio/         - OBS Studio source (git submodule); CMake may fetch deps into .deps/
-data/locale/en-US.ini           - default English strings (obs_module_text)
+    test_main.cpp                   - Catch2 runner
+    *_stub.cpp                      - minimal stubs for test linking (no Qt)
+data/locale/en-US.ini               - default English strings
 CMakeLists.txt
 ```
 
@@ -229,17 +207,66 @@ CMakeLists.txt
 ## Troubleshooting
 
 - **The dock is empty / no "OBS default" row appears.**
-  Make sure you have a streaming service configured in *OBS Settings → Stream*. The plugin retries reading it at 0 / 250 / 750 / 2000 / 5000 ms after the dock loads, plus on every `FINISHED_LOADING` / `PROFILE_CHANGED` / `STREAMING_STARTING` event.
-- **A destination is stuck in *Failed* with a terminal reason.**
-  Check the *Last error* column. Common causes: wrong stream key, server URL doesn't match the platform's required scheme/port, network issue. Fix the row via *Edit selected* and start streaming again.
-- **OBS crashes on Start Streaming with destinations enabled.**
-  This was a known issue caused by sharing the main streaming output's encoders with secondary outputs. It is fixed in current builds — every destination now owns its encoders. Make sure you are running the latest plugin DLL.
+  Make sure you have a streaming service configured in *OBS Settings → Stream*. The plugin syncs the default row on `FINISHED_LOADING`, `PROFILE_CHANGED`, and `STREAMING_STARTING` events.
+- **A destination is stuck in *Failed*.**
+  Check the *Last error* column. Common causes: wrong stream key, server URL mismatch, network issue, or codec incompatibility. Fix the row via *Edit selected* and start streaming again.
+- **Secondary stream connects but drops / reconnects.**
+  The destination's encoder codec may not be accepted by the platform. For example, Twitch requires H.264 — if your main stream uses HEVC and the destination shares that encoder, Twitch will reject it. Set the destination's encoder to an H.264 encoder (e.g., Software x264 or NVIDIA NVENC H.264).
+- **Multiple NVIDIA encoders fail to start.**
+  Most consumer NVIDIA GPUs support only 2–3 simultaneous NVENC sessions. Use the **same encoder** as the main stream (shared session) or use **Software x264** for additional destinations.
+
+---
+
+## Build from source
+
+**Prerequisites:** Windows, Visual Studio 2022 (C++ desktop workload), CMake 3.16+, Qt 6 Widgets.
+
+**1. Fetch submodules**
+
+```powershell
+git submodule update --init --recursive
+```
+
+**2. Build OBS Studio from the submodule**
+
+```powershell
+cmake -S third_party/obs-studio -B build-obs `
+  -DENABLE_PLUGINS=OFF `
+  -DENABLE_SCRIPTING=OFF `
+  -DCMAKE_INSTALL_PREFIX="$PWD/obs-install"
+cmake --build build-obs --config Release
+cmake --install build-obs --config Release
+cmake --install build-obs --config Release --component Development
+```
+
+**3. Configure the plugin**
+
+```powershell
+$qt6Path = (Get-ChildItem "third_party/obs-studio/.deps/obs-deps-qt6-*" -Directory | Select-Object -First 1).FullName
+$depsPath = (Get-ChildItem "third_party/obs-studio/.deps/obs-deps-20*" -Directory | Select-Object -First 1).FullName
+cmake -B build -S . -DCMAKE_PREFIX_PATH="$PWD/obs-install;$PWD/obs-install/cmake;$qt6Path;$depsPath"
+```
+
+**4. Build and test**
+
+```powershell
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+The built plugin is `build\Release\obs-multistream-plugin.dll`.
+
+---
+
+## Acknowledgements
+
+This plugin was developed with the assistance of **Claude** (Anthropic), an AI coding agent. The author's primary background is in Python — Claude helped with C++ architecture, OBS API integration, encoder session management, CI/CD pipelines, and code review. All code was reviewed, tested, and validated manually by the author before release.
 
 ---
 
 ## License
 
-See `COPYRIGHT` (and `LICENSE` if present) in the repository root.
+See `COPYRIGHT` in the repository root.
 
 ## Contributing
 
