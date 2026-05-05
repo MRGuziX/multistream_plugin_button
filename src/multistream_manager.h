@@ -24,6 +24,7 @@ private:
         obs_output_t *output = nullptr;
         obs_encoder_t *video_encoder = nullptr;
         obs_encoder_t *audio_encoder = nullptr;
+        bool using_main_encoder = false;
     };
 
     struct RetryInfo {
@@ -55,8 +56,6 @@ private:
     static void connect_output_callbacks(DestinationRuntime *runtime);
     static void disconnect_output_callbacks(DestinationRuntime *runtime);
     static std::string make_safe_name(const std::string &prefix, const Destination &dst);
-    static obs_encoder_t *create_owned_video_encoder(const Destination &dst, bool vertical);
-    static obs_encoder_t *create_owned_audio_encoder(const Destination &dst);
 
     bool start_single_destination(const Destination &dst);
 };
