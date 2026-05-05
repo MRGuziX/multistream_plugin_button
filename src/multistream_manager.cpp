@@ -12,8 +12,31 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <utility>
+
+// Two encoder type IDs are shareable when they produce the same codec on
+// the same hardware backend.  OBS can register multiple implementations of
+// the same encoder (e.g. "ffmpeg_nvenc" vs "jim_nvenc") — they have
+// different type IDs but identical display names and codec output, so
+// sharing one instance across outputs that selected either variant is safe.
+static bool encoders_shareable(const char *id_a, const char *id_b)
+{
+    if (!id_a || !id_b)
+        return false;
+    if (strcmp(id_a, id_b) == 0)
+        return true;
+    const char *codec_a = obs_get_encoder_codec(id_a);
+    const char *codec_b = obs_get_encoder_codec(id_b);
+    if (!codec_a || !codec_b || strcmp(codec_a, codec_b) != 0)
+        return false;
+    const char *disp_a = obs_encoder_get_display_name(id_a);
+    const char *disp_b = obs_encoder_get_display_name(id_b);
+    if (!disp_a || !disp_b)
+        return false;
+    return strcmp(disp_a, disp_b) == 0;
+}
 
 using obs_multistream_detail::ObsOutputHolder;
 using obs_multistream_detail::ObsServiceHolder;
@@ -221,7 +244,7 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         if (src.is_vertical != vertical)
             continue;
         const char *enc_id = obs_encoder_get_id(src.video);
-        if (!enc_id || wanted_enc != std::string(enc_id))
+        if (!encoders_shareable(wanted_enc.c_str(), enc_id))
             continue;
         venc = obs_encoder_get_ref(src.video);
         aenc = obs_encoder_get_ref(src.audio);
@@ -263,12 +286,9 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         if (aenc) obs_encoder_set_audio(aenc, obs_get_audio());
     }
 
-    // Ensure video/audio handlers are bound — required for shared encoders whose
-    // handlers may not yet be visible to the new output's data-capture check.
-    if (sharing) {
-        obs_encoder_set_video(venc, obs_get_video());
-        obs_encoder_set_audio(aenc, obs_get_audio());
-    }
+    // Note: shared encoders already have video/audio handlers bound by the
+    // stream that created them.  obs_encoder_set_video() is a no-op on an
+    // active encoder, so we intentionally skip it for the sharing path.
 
     if (!venc || !aenc) {
         if (venc) obs_encoder_release(venc);
