@@ -175,10 +175,28 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
     obs_data_t *service_settings = obs_data_create();
     obs_data_set_string(service_settings, "server", dst.server.c_str());
     obs_data_set_string(service_settings, "key", dst.stream_key.c_str());
+
+    const PlatformKind platform_kind = detect_platform_kind(dst.platform);
+    const char *service_type = "rtmp_custom";
+    if (platform_kind == PlatformKind::Twitch) {
+        service_type = "rtmp_common";
+        obs_data_set_string(service_settings, "service", "Twitch");
+    } else if (platform_kind == PlatformKind::YouTube) {
+        service_type = "rtmp_common";
+        obs_data_set_string(service_settings, "service", "YouTube - RTMPS");
+    } else if (platform_kind == PlatformKind::Kick) {
+        service_type = "rtmp_common";
+        obs_data_set_string(service_settings, "service", "Kick");
+    }
+
     const std::string service_name =
         make_safe_name(vertical ? "multistream_vertical_service" : "multistream_service", dst);
     service_holder.p =
-        obs_service_create("rtmp_custom", service_name.c_str(), service_settings, nullptr);
+        obs_service_create(service_type, service_name.c_str(), service_settings, nullptr);
+    if (!service_holder.p && strcmp(service_type, "rtmp_custom") != 0) {
+        service_holder.p =
+            obs_service_create("rtmp_custom", service_name.c_str(), service_settings, nullptr);
+    }
     obs_data_release(service_settings);
     if (!service_holder.p) {
         blog(LOG_ERROR, "[obs-multistream-plugin] Failed to create service for platform=%s",
@@ -371,7 +389,6 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
 
     retry_infos_[id].attempts = 0;
 
-    const PlatformKind platform_kind = detect_platform_kind(dst.platform);
     blog(LOG_INFO,
          "[obs-multistream-plugin] Started %s secondary stream for platform=%s (kind=%s, protocol=%s)",
          pipeline_name, dst.platform.c_str(),

@@ -66,7 +66,7 @@ std::string default_server_for_platform(PlatformKind kind)
 {
     switch (kind) {
     case PlatformKind::YouTube:
-        return "rtmps://a.rtmp.youtube.com/live2";
+        return "rtmps://a.rtmps.youtube.com:443/live2";
     case PlatformKind::Twitch:
         return "rtmps://live.twitch.tv/app";
     case PlatformKind::Kick:
