@@ -23,7 +23,7 @@ TEST_CASE("default server autofill after normalization")
 {
     Destination youtube = make_destination("YouTube", "", "k1");
     normalize_destination(youtube);
-    REQUIRE(youtube.server == "rtmps://a.rtmp.youtube.com/live2");
+    REQUIRE(youtube.server == "rtmps://a.rtmps.youtube.com:443/live2");
 
     Destination twitch = make_destination("Twitch", "", "k2");
     normalize_destination(twitch);

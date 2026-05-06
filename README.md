@@ -217,6 +217,13 @@ CMakeLists.txt
 
 ---
 
+## Known Limitations
+
+- **Twitch bitrate cap (~8,000 kbps).** Twitch limits the maximum ingest bitrate per account — typically around 8,000 kbps for most accounts. When you share the main encoder, all destinations receive the same bitrate. If your OBS bitrate exceeds Twitch's limit, the stream connects but Twitch rejects the video data (error #1000 on the dashboard). **Fix:** set your OBS bitrate in *Settings → Output → Streaming* to 8,000 kbps or less. Both YouTube and Twitch will accept this — YouTube re-encodes on its side anyway, so the quality difference is negligible.
+- **Encoder sharing requires compatible settings.** When sharing a single encoder across multiple platforms, all platforms must accept the encoder's settings (bitrate, keyframe interval, codec). If one platform has stricter requirements, lower the main encoder settings in *OBS Settings → Output* to the strictest common denominator.
+
+---
+
 ## Build from source
 
 **Prerequisites:** Windows, Visual Studio 2022 (C++ desktop workload), CMake 3.16+, Qt 6 Widgets.
