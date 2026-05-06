@@ -215,6 +215,12 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
     const std::string wanted_enc = dst.video_encoder_id.empty() ? (main_enc_id ? main_enc_id : "obs_x264")
                                                                 : dst.video_encoder_id;
 
+    blog(LOG_INFO,
+         "[obs-multistream-plugin] Encoder lookup for platform=%s: wanted='%s', main='%s', dst_config='%s'",
+         dst.platform.c_str(), wanted_enc.c_str(),
+         main_enc_id ? main_enc_id : "(null)",
+         dst.video_encoder_id.c_str());
+
     obs_encoder_t *venc = nullptr;
     obs_encoder_t *aenc = nullptr;
     bool sharing = false;
@@ -245,7 +251,11 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         if (src.is_vertical != vertical)
             continue;
         const char *enc_id = obs_encoder_get_id(src.video);
-        if (!encoders_shareable(wanted_enc.c_str(), enc_id))
+        const bool shareable = encoders_shareable(wanted_enc.c_str(), enc_id);
+        blog(LOG_INFO,
+             "[obs-multistream-plugin]   candidate from %s: id='%s', shareable=%s",
+             src.label, enc_id ? enc_id : "(null)", shareable ? "YES" : "NO");
+        if (!shareable)
             continue;
         venc = obs_encoder_get_ref(src.video);
         aenc = obs_encoder_get_ref(src.audio);
@@ -265,6 +275,9 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
     // keyint_sec and rate_control; their built-in defaults produce output
     // that ingest servers (especially Twitch) reject.
     if (!sharing) {
+        blog(LOG_INFO,
+             "[obs-multistream-plugin] No shareable encoder found for platform=%s, creating new '%s' instance",
+             dst.platform.c_str(), wanted_enc.c_str());
         const std::string vname = make_safe_name("multistream_video", dst);
 
         obs_data_t *vs = obs_data_create();
