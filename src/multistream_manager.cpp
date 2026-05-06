@@ -265,6 +265,21 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
                               rt->destination.platform.c_str()});
     }
 
+    // Ask the service what encoder settings it requires (bitrate caps,
+    // keyframe interval, etc.).  rtmp_common applies platform-specific
+    // limits (e.g. Twitch max bitrate); rtmp_custom is a no-op.
+    obs_data_t *service_video_settings = obs_data_create();
+    obs_data_t *service_audio_settings = obs_data_create();
+    obs_service_apply_encoder_settings(service_holder.p,
+                                       service_video_settings,
+                                       service_audio_settings);
+
+    // Check the service's maximum bitrate — if the shared encoder exceeds
+    // it, sharing would send data the platform rejects (e.g. YouTube
+    // encoder at 10000 kbps shared to Twitch which caps at 6000).
+    const long long service_max_bitrate =
+        obs_data_get_int(service_video_settings, "max_bitrate");
+
     for (const EncoderSource &src : candidates) {
         if (src.is_vertical != vertical)
             continue;
@@ -275,6 +290,20 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
              src.label, enc_id ? enc_id : "(null)", shareable ? "YES" : "NO");
         if (!shareable)
             continue;
+
+        if (service_max_bitrate > 0) {
+            obs_data_t *enc_settings = obs_encoder_get_settings(src.video);
+            const long long enc_bitrate = obs_data_get_int(enc_settings, "bitrate");
+            obs_data_release(enc_settings);
+            if (enc_bitrate > service_max_bitrate) {
+                blog(LOG_INFO,
+                     "[obs-multistream-plugin]   skipping share — encoder bitrate %lld exceeds "
+                     "platform max %lld for platform=%s",
+                     enc_bitrate, service_max_bitrate, dst.platform.c_str());
+                continue;
+            }
+        }
+
         venc = obs_encoder_get_ref(src.video);
         aenc = obs_encoder_get_ref(src.audio);
         if (venc && aenc) {
@@ -288,10 +317,8 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         if (aenc) { obs_encoder_release(aenc); aenc = nullptr; }
     }
 
-    // No shareable encoder found — create a dedicated instance with
-    // streaming-safe defaults.  Hardware encoders like NVENC need explicit
-    // keyint_sec and rate_control; their built-in defaults produce output
-    // that ingest servers (especially Twitch) reject.
+    // No shareable encoder — create a dedicated instance.  Apply the
+    // service's recommended settings first, then overlay user overrides.
     if (!sharing) {
         blog(LOG_INFO,
              "[obs-multistream-plugin] No shareable encoder found for platform=%s, creating new '%s' instance",
@@ -299,6 +326,8 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         const std::string vname = make_safe_name("multistream_video", dst);
 
         obs_data_t *vs = obs_data_create();
+        obs_data_apply(vs, service_video_settings);
+
         int bitrate = dst.video_bitrate_kbps;
         if (bitrate <= 0) {
             config_t *profile = obs_frontend_get_profile_config();
@@ -310,6 +339,8 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
                     bitrate = static_cast<int>(config_get_int(profile, "SimpleOutput", "VBitrate"));
             }
         }
+        if (service_max_bitrate > 0 && bitrate > static_cast<int>(service_max_bitrate))
+            bitrate = static_cast<int>(service_max_bitrate);
         if (bitrate > 0)
             obs_data_set_int(vs, "bitrate", bitrate);
         obs_data_set_int(vs, "keyint_sec", 2);
@@ -339,6 +370,9 @@ bool MultistreamManager::start_single_destination(const Destination &dst)
         obs_data_release(as);
         if (aenc) obs_encoder_set_audio(aenc, obs_get_audio());
     }
+
+    obs_data_release(service_video_settings);
+    obs_data_release(service_audio_settings);
 
     if (!venc || !aenc) {
         if (venc) obs_encoder_release(venc);
